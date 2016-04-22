@@ -10,75 +10,126 @@
 #include <tbnet.h>
 
 #include "define.hpp"
-#include "server_pair_id.hpp"
 #include "tair_client_api.hpp"
+#include "tair_client_api_impl.hpp"
 #include "data_entry.hpp"
 #include "log.hpp"
 #include "inval_stat_helper.hpp"
+#include<string>
+#include "inval_periodic_worker.hpp"
 namespace tair {
-    class ServerPairId;
-    typedef __gnu_cxx::hash_map<std::string, ServerPairId*, tbsys::str_hash> SERVER_PAIRID_MAP;
-    typedef __gnu_cxx::hash_map<std::string, std::vector<tair_client_api*>, tbsys::str_hash > CLIENT_HELPER_MAP;
+  class TairGroup;
+  typedef __gnu_cxx::hash_map<std::string, std::vector<TairGroup*>, tbsys::str_hash > CLIENT_HELPER_MAP;
 
-    class InvalLoader: public tbsys::CDefaultRunnable {
-    public:
-        InvalLoader();
-        virtual ~InvalLoader();
+  class InvalLoader: public PeriodicTask {
+  public:
+    InvalLoader();
+    virtual ~InvalLoader();
 
-        std::vector<tair_client_api*>* get_client_list(const char *groupname);
-        void run(tbsys::CThread *thread, void *arg);
-        bool is_loading() const {
-          return loading;
-        }
-        void stop();
+    bool find_groups(const char *groupname, std::vector<TairGroup*>* &groups, int* p_local_cluster_count);
+    inline int get_client_count(const char *groupname)
+    {
+      vector<TairGroup*>* groups = NULL;
+      bool got = find_groups(groupname, groups, NULL);
+      return (got && groups != NULL) ? groups->size() : 0;
+    }
 
-    //private:
-    protected:
-        void load_group_name();
-        void do_check_client();
-    protected:
-        bool loading;
-        CLIENT_HELPER_MAP client_helper_map;
-        std::vector<tair_client_api*> client_list;
-        std::vector<tair_client_api*> disconnected_client_list;
-        //The instance of `tair_client_api will be created for every group in cluster,
-        //whose master configserver ID is `master, and slave configserver ID is `slave.
-        //The object of `group_client_info contains such information as: the cluster's
-        //master configserver, slave configserver, group's name, and status.
-        struct group_client_info {
-          uint64_t master;
-          uint64_t slave;
-          std::string group_name;
-          bool removed;
-        };
-        //group's name --> instance of `group_client_info.
-        typedef __gnu_cxx::hash_map<std::string, group_client_info*, tbsys::str_hash > group_info_map;
-        //configserver ID --> group_info_map*
-        typedef __gnu_cxx::hash_map<uint64_t, group_info_map*, __gnu_cxx::hash<int> > group_client_map;
-        //collect the information of ervery cluster managed by invalid server.
-        typedef __gnu_cxx::hash_map<uint64_t, uint64_t, __gnu_cxx::hash<int> > cluster_info_map;
-        //The interaction, that builds connection with every group in the cluster, with the cluster will
-        //be parsed.
-        //In the first parse, will abtain all group's name for every cluster, according to the master
-        //and slave. If failed to abtain the group's name because of a network unreachable, the parameter
-        //such as master, slave should be collected, and saved in `cluster_without_group_name.
-        cluster_info_map cluster_without_groupnames;
-        //As noted above, in the 2nd parse, will create the instance of `tair_client_api for every group
-        //in the cluster, using the parameters `master, `slave, and group's name. Supposing fail to connect
-        //with the cluster for the same reason, a network unreachable, the information such as master, slave
-        //and group's name should be saved in the `disconnected_client_map.
-        group_client_map disconnected_client_map;
-        inline void disconnected_client_map_insert(const uint64_t &master, const uint64_t &slave,
-            const std::string &group_name);
-        //markup the item should be removed.
-        inline void disconnected_client_map_markup(const uint64_t &master, const std::string &group_name);
-        inline void disconnected_client_map_remove();
+    void runTimerTask();
+    void start();
+    void stop();
 
-        //If all 2 parses described above are failed, will retry the action that retrieving the group's names
-        //for every cluster, and building the connections with the cluster's group.
-        void retrieve_group_names();
-        void build_connections();
+    inline bool load_success() const
+    {
+      return !load_failure;
+    }
+
+    std::string get_info();
+
+    void set_thread_parameter(int max_failed_count, std::string config_file_name);
+
+    //the return value of the funciton `check_config
+    enum
+    {
+      //ok, relax
+      CONFIG_OK = 0,
+      //config file was exist, but the item named `cluster_list was not contained.
+      CONFIG_CLUSTER_NAME_LIST_NOT_EXIST = 1,
+      //can not fetch the `cluster_name_list from the config
+      CONFIG_CLUSTER_NAME_LIST_ILLEGAL = 2,
+      //the config file which hold by the running inval_server was modified.
+      //in this case, the inval_server should be restarted.
+      CONFIG_CLUSTER_NAME_LIST_MODIFIED = 3,
+
+      //config file was not exist
+      CONFIG_FILE_NOT_EXIST = 4,
+
+      //config cluster name error
+      CONFIG_CLUSTER_NAME_ERROR = 5,
     };
-}
+    int check_config();
+  protected:
+    //map group name to `TairGroup
+    typedef __gnu_cxx::hash_map<std::string, TairGroup*, tbsys::str_hash > group_info_map_t;
+    struct ClusterInfo
+    {
+      uint64_t master;
+      uint64_t slave;
+      std::string cluster_name;
+      std::vector<std::string> group_name_list;
+      group_info_map_t groups;
+      int8_t mode;
+      bool all_connected;
+      ClusterInfo();
+      ~ClusterInfo();
+    };
+    typedef __gnu_cxx::hash_map<std::string, int, tbsys::str_hash > local_count_map_t;
+    local_count_map_t local_count_map;
 
+  protected:
+    void load_group_name();
+
+    //read cluster info from config file.
+    void fetch_cluster_infos();
+
+    //get the group name from the cluster.
+    void fetch_group_names(ClusterInfo &ci);
+
+    //create tair_client instance
+    void connect_cluster(ClusterInfo &ci);
+
+    //reload the group names.
+    void do_reload_work();
+
+    //read config info for the cluster named `cluster_name
+    void fetch_info(const std::string &cluster_name);
+    //parse the cluster's name list in the config file
+    void parse_cluster_list(const char *p_cluster_list, std::vector<std::string> &cluster_name_list);
+
+    //return true if the `section_name was registed in the `base_section_names, otherwise return false.
+    bool is_base_section_name(const std::string &section_name);
+
+    //return true if the two vectors contain the same elements.
+    bool is_same_content(std::vector<std::string> &left, std::vector<std::string> &right);
+  protected:
+    bool load_failure;
+    CLIENT_HELPER_MAP client_helper_map;
+    std::vector<std::string> group_names;
+    std::vector<TairGroup*> tair_groups;
+    //collect the information of ervery cluster managed by invalid server.
+    typedef __gnu_cxx::hash_map<std::string, ClusterInfo*, tbsys::str_hash > cluster_info_map_t;
+    cluster_info_map_t clusters;
+    int max_failed_count;
+    static const int LOADER_SLEEP_TIME = 5;
+    static const int MAX_ROTATE_TIME = (60 * 60 * 24) / LOADER_SLEEP_TIME;
+
+    //for rotate log
+    int log_rotate_time;
+    int config_file_version;
+    std::string config_file_name;
+    int config_file_status;
+
+    //base section name in the config file
+    static std::vector<std::string> base_section_names;
+  };
+}
 #endif

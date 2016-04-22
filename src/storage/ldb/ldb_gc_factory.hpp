@@ -9,7 +9,7 @@
  * Synchronization guaranteed, cause add/check may happen in different place,
  * outside synchronization can't be got.
  *
- * Version: $Id$
+ * Version: $Id: ldb_gc_factory.hpp 1961 2013-11-20 09:57:21Z dutor $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -118,10 +118,10 @@ namespace tair
 #undef DUMP_GCNODE
 
 #define GCNODE_SELF_FMT                                                 \
-      ", node [key: %d, sequence: %"PRI64_PREFIX"u, filenumber: %"PRI64_PREFIX"u, when: %u]."
+      ", node [key: %d, sequence: %"PRI64_PREFIX"u, filenumber: %"PRI64_PREFIX"u, when: %s]."
 
 #define GCNODE_SELF_ARGS(NODE)                                          \
-      (NODE).key_, (NODE).sequence_, (NODE).file_number_, (NODE).when_
+      (NODE).key_, (NODE).sequence_, (NODE).file_number_, tair::util::time_util::time_to_str((NODE).when_).c_str()
 
 #define DUMP_GCNODE(level, node, fmt, args...)                          \
       (log_##level(fmt GCNODE_SELF_FMT, ##args, GCNODE_SELF_ARGS(node)))
@@ -165,11 +165,11 @@ namespace tair
       class LdbGcFactory
       {
       public:
-        LdbGcFactory(LdbInstance* db);
+        LdbGcFactory();
         ~LdbGcFactory();
         friend class BitcmpLdbComparatorImpl; // convient use
 
-        bool start();
+        bool start(LdbInstance* db);
         void stop();
         void destroy();
 
@@ -180,6 +180,9 @@ namespace tair
         // before remove, the key => node maybe modifid,
         // we can only remove node that is exact as @node from factory.
         int remove(const GcNode& node, GcType type);
+
+        int add(std::string& key, GcType type);
+        int remove(std::string& key, GcType type);
 
         GcNode pick_gc_node(GcType type);
         void try_evict();

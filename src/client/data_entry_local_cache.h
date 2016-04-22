@@ -11,9 +11,7 @@ struct data_entry_hash
 {
   size_t operator()(const tair::common::data_entry& key) const
   {
-    tair::common::data_entry *entry = 
-          const_cast<tair::common::data_entry *>(&key);
-    uint64_t code = entry->get_hashcode();
+    uint64_t code = key.get_hashcode();
     return static_cast<size_t>(code);
   }
 };

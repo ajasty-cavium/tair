@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: tair_multi_cluster_client_impl.hpp 3034 2014-11-03 07:25:13Z yuming $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -33,6 +33,7 @@ namespace tair
     void close();
 
     int get(int area, const data_entry& key, data_entry*& data);
+    int get(int area, const data_entry& key, callback_get_pt cb = NULL, void *args = NULL);
     int put(int area, const data_entry& key, const data_entry& data, int expire, int version, bool fill_cache = true,
             TAIRCALLBACKFUNC pfunc = NULL, void* arg = NULL);
     int remove(int area, const data_entry& key, TAIRCALLBACKFUNC pfunc = NULL, void* arg = NULL);
@@ -45,6 +46,18 @@ namespace tair
     { return TAIR_RETURN_NOT_SUPPORTED; }
     int mdelete(int area, const vector<data_entry *> &keys)
     { return TAIR_RETURN_NOT_SUPPORTED; }
+
+    int prefix_get(int area, const data_entry &pkey, const data_entry &skey, data_entry *&value);
+    int prefix_gets(int area, const data_entry &pkey, const tair_dataentry_set &skey_set,
+                            tair_keyvalue_map &result_map, key_code_map_t &failed_map);
+    int prefix_gets(int area, const data_entry &pkey, const tair_dataentry_vector &skeys,
+                            tair_keyvalue_map &result_map, key_code_map_t &failed_map);
+    int prefix_put(int area, const data_entry &pkey, const data_entry &skey,
+                           const data_entry &value, int expire, int version);
+    int prefix_puts(int area, const data_entry &pkey,
+                            const vector<tair::common::key_value_pack_t*> &skey_value_packs, key_code_map_t &failed_map);
+    int prefix_remove(int area, const data_entry &pkey, const data_entry &skey);
+    int prefix_removes(int area, const data_entry &pkey, const tair_dataentry_set &skey_set, key_code_map_t &key_code_map);
 
     void set_timeout(int32_t timeout_ms);
     void set_update_interval(int32_t interval_ms);

@@ -1,0 +1,20 @@
+[public]
+log_file = logs/tair_administrator.log
+pid_file = logs/tair_administrator.pid
+# error, warn, info, debug
+log_level = debug
+
+ #config for mysql
+db_addr = 127.0.0.1
+db_port = 3306
+db_user = root
+db_pasw = 123456 
+
+http_port = 8080
+http_thread_count = 4
+
+rpc_port = 7191
+rpc_thread_count = 2
+
+worker_thread_count = 8
+

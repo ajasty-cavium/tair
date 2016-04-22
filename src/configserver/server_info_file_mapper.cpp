@@ -7,7 +7,7 @@
  *
  * server_info_file_mapper.cpp is a interface to manage the file which store the server's info
  *
- * Version: $Id$
+ * Version: $Id: server_info_file_mapper.cpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>

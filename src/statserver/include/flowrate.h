@@ -16,22 +16,29 @@ enum FlowType
 
 enum FlowStatus
 {
-  DOWN = 0, KEEP = 1, UP = 2 
+  DOWN = 0, KEEP = 1, UP = 2
 };
 
-struct FlowLimit 
+struct FlowLimit
 {
-  int lower;
-  int upper;
+  int64_t lower;
+  int64_t upper;
 };
 
-struct Flowrate 
+struct AllFlowLimit
 {
-  uint32_t in;
+  FlowLimit in;
+  FlowLimit out;
+  FlowLimit ops;
+};
+
+struct Flowrate
+{
+  int64_t in;
   FlowStatus in_status;
-  uint32_t out;
+  int64_t out;
   FlowStatus out_status;
-  uint32_t ops;
+  int64_t ops;
   FlowStatus ops_status;
 
   FlowStatus status;

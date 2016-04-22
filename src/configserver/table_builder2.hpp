@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: table_builder2.hpp 1961 2013-11-20 09:57:21Z dutor $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -28,7 +28,7 @@ namespace tair {
       {
       }
     public:
-      void set_available_server(const set<node_info *>&ava_ser);
+      void set_available_server(const node_info_set& ava_ser);
       int is_this_node_OK(server_id_type node_id, int line_num,
                           size_t node_idx, hash_table_type & hash_table_dest,
                           int option_level, bool node_in_use = false);

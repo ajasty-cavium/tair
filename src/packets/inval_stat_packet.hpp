@@ -15,6 +15,10 @@ namespace tair {
     {
       setPCode(TAIR_REQ_INVAL_STAT_PACKET);
     }
+
+    virtual base_packet::Type get_type() {
+      return base_packet::REQ_READ;
+    }
   };
 
   class response_inval_stat : public base_packet {
@@ -29,6 +33,7 @@ namespace tair {
       group_count = 0;
       code = 0;
     }
+
     ~response_inval_stat()
     {
       if(key != NULL) {
@@ -41,7 +46,11 @@ namespace tair {
       }
     }
 
-    bool encode(tbnet::DataBuffer *output)
+    virtual base_packet::Type get_type() {
+      return base_packet::RESP_COMMON;
+    }
+
+    bool encode(DataBuffer *output)
     {
       output->writeInt32(config_version);
       output->writeInt32(code);
@@ -54,7 +63,7 @@ namespace tair {
       return true;
     }
 
-    bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+    bool decode(DataBuffer *input, PacketHeader *header)
     {
       if(header->_dataLen < 8) {
         log_warn("data is too few");

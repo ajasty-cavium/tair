@@ -1,0 +1,41 @@
+CREATE DATABASE IF NOT EXISTS `tair_administrator`;
+
+USE `tair_administrator`;
+
+CREATE  TABLE IF NOT EXISTS `configuration` (
+  `tair_id` VARCHAR(45) CHARACTER SET 'utf8' NOT NULL ,
+  `conf_id` VARCHAR(45) CHARACTER SET 'utf8' NOT NULL ,
+  `conf_key` VARCHAR(45) CHARACTER SET 'utf8' NOT NULL ,
+  `conf_val` VARCHAR(1024) CHARACTER SET 'utf8' NOT NULL DEFAULT '' ,
+  `op_uuid` VARCHAR(24) NOT NULL DEFAULT '' ,
+  `deleted` TINYINT(1)  NOT NULL DEFAULT 0 ,
+  `last_modified` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP ,
+  PRIMARY KEY (`tair_id`, `conf_id`, `conf_key`) )
+ENGINE = InnoDB
+DEFAULT CHARACTER SET = utf8;
+
+CREATE  TABLE IF NOT EXISTS `cluster` (
+  `tair_id` VARCHAR(45) NOT NULL ,
+  `master` VARCHAR(128) NOT NULL ,
+  `slave` VARCHAR(128) NOT NULL ,
+  `groupname` VARCHAR(45) NOT NULL ,
+  `cid_list` VARCHAR(1024) NULL DEFAULT '' ,
+  `online` TINYINT(1)  NULL DEFAULT true ,
+  `seq_id` TINYINT(4)  NOT NULL AUTO_INCREMENT,
+  UNIQUE KEY (`seq_id`) ,
+  PRIMARY KEY (`tair_id`) )
+ENGINE = InnoDB;
+
+CREATE  TABLE IF NOT EXISTS `oplog` (
+  `op_uuid` VARCHAR(24) NOT NULL ,
+  `tair_id` VARCHAR(45) NOT NULL ,
+  `conf_id` VARCHAR(45) NOT NULL ,
+  `conf_key` VARCHAR(45) NOT NULL ,
+  `conf_val` VARCHAR(10240) NULL DEFAULT '' ,
+  `op_type` VARCHAR(16) NULL DEFAULT '' ,
+  `op_status` VARCHAR(16) NULL DEFAULT '' ,
+  `last_version` VARCHAR(20) NOT NULL ,
+  `next_version` VARCHAR(20) NOT NULL ,
+  `last_modified` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP ,
+  PRIMARY KEY (`op_uuid`) )
+ENGINE = InnoDB;

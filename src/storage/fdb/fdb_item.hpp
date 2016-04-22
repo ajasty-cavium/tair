@@ -7,7 +7,7 @@
  *
  * commonly used data structures of fdb storage engine
  *
- * Version: $Id$
+ * Version: $Id: fdb_item.hpp 1579 2013-06-03 06:05:00Z dutor $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -69,7 +69,7 @@ namespace tair {
 
         void log_self(const char *hit = "") {
           log_debug
-            ("%s - item: {meta_offset=%u, bucket_index=%u, parent_off=%u, is_right=%d, is_new=%d, ItemIndex{left=%u, right=%u, size: %u, offset: %lu, hashcode: %llu}, ItemMeta{keysize=%u, valsize=%u, padsize=%u, version=%u, flag=%d, cdate=%u, mdata=%u, edate=%u}",
+            ("%s - item: {meta_offset=%u, bucket_index=%u, parent_off=%u, is_right=%d, is_new=%d, ItemIndex{left=%u, right=%u, size: %lu, offset: %lu, hashcode: %lu}, ItemMeta{keysize=%u, valsize=%u, padsize=%u, version=%u, flag=%d, cdate=%u, mdata=%u, edate=%u}",
              hit, meta_offset, bucket_index, parent_off, is_right, is_new,
              meta.left, meta.right, meta.size, meta.offset, meta.hashcode,
              data.keysize, data.valsize, data.prefixsize, data.version,

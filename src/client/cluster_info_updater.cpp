@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: cluster_info_updater.cpp 1127 2012-09-17 00:09:36Z nayan@taobao.com $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -63,11 +63,12 @@ namespace tair
   void cluster_info_updater::run(tbsys::CThread*, void*)
   {
     int ret;
-    bool urgent = false;
+    bool urgent = false, force = false;
     int32_t interval = interval_ms_;
     while (!_stop)
     {
-      ret = update_cluster_info(false, urgent);
+      ret = update_cluster_info(force, urgent);
+      force = false;
       if (ret != TAIR_RETURN_SUCCESS)
       {
         interval = FAIL_UPDATE_CLUSTER_INFO_INTERVAL_MS;
@@ -77,6 +78,7 @@ namespace tair
       {
         interval = URGENT_UPDATE_CLUSTER_INFO_INTERVAL_MS;
         log_warn("urgent condition, maybe all cluster are dead. retry after %d(ms)", interval);
+        force = true;
       }
       cond_.wait(interval);
       interval = interval_ms_;

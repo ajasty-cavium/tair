@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: stat_info.hpp 1279 2013-01-04 02:50:08Z dutor $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -17,7 +17,7 @@
 #include <vector>
 #include <map>
 #include "tbsys.h"
-#include "tbnet.h"
+#include "databuffer.hpp"
 #include "define.hpp"
 namespace tair {
   namespace config_server {
@@ -59,8 +59,8 @@ namespace tair {
       }
       void format_detail(const char *prefix, std::map<std::string, std::string> &m_k_v) const;
 
-      void encode(tbnet::DataBuffer * output) const;
-      void decode(tbnet::DataBuffer * input);
+      void encode(DataBuffer * output) const;
+      void decode(DataBuffer * input);
     private:
         std::vector<int64_t> data_holder;
     };
@@ -104,9 +104,9 @@ namespace tair {
         data_holder.clear();
       }
 
-      void encode(tbnet::DataBuffer * output) const;
+      void encode(DataBuffer * output) const;
 
-      void decode(tbnet::DataBuffer * input);
+      void decode(DataBuffer * input);
       void format_info(std::map<std::string, std::string> &m_k_v) const;
     private:
       uint32_t last_update_time;        //this value only for config server

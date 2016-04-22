@@ -1,0 +1,32 @@
+[public]
+# for lens' own
+log_file = logs/lens.log
+pid_file = logs/lens.pid
+# error, warn, info, debug
+log_level = info
+
+# common configs for clusters
+log_dir = logs
+#1G
+log_rotate_size = 1073741824
+log_area = log_area.log
+log_server = log_server.log
+log_server_total = log_server_total.log
+
+[tair_cm3]
+master = 10.249.199.184:15198
+slave = 10.249.199.185:15198
+group_name = group_1
+interval = 60
+ping_count = 8
+timeout = 100
+# if send tair statistics to tair monitor
+# 0 means statistics is not send, and monitor_url is ignored, 1 means yes
+monitor_enable = 0
+monitor_url = http://monitor.tair.taobao.net:8080/yunhen_test/AcceptTairStat
+# if 1, recode corresponding statistics, if 0, don't need this statistics.
+# if 1, locate is defined by $log_dir, cluster_name, $log_xxxx
+# in this example, is logs/tair_cm3/log_area.log, logs/tair_cm3/log_server.log and so on.
+need_log_area = 1
+need_log_server = 1
+need_log_server_total = 1

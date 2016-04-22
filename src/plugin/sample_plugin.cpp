@@ -7,7 +7,7 @@
  *
  * sample_plugin.cpp is a example to show how to make a plugin
  *
- * Version: $Id$
+ * Version: $Id: sample_plugin.cpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>

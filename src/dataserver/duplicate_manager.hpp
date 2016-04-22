@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: duplicate_manager.hpp 2037 2013-12-31 07:19:35Z dutor $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -15,12 +15,17 @@
 #ifndef DUPLICATE_MANAGER_H
 #define DUPLICATE_MANAGER_H
 #include <tbsys.h>
-#include <tbnet.h>
+#include <Shared.h>
+#include <Handle.h>
+#include <easy_io.h>
+#include <easy_io_struct.h>
 #include "table_manager.hpp"
-#include "boost/shared_ptr.hpp"
 #include "duplicate_base.hpp"
 #include "duplicate_packet.hpp"
-#include "packet_streamer.hpp"
+#include "databuffer.hpp"
+#include "easy_helper.hpp"
+#include "packet_factory.hpp"
+#include "tair_server.hpp"
 #include <ext/hash_map>
 #include <queue>
 #include <map>
@@ -29,7 +34,11 @@ namespace tair {
    class duplicate_sender_manager;
    class bucket_waiting_queue {
    public:
-      typedef boost::shared_ptr<request_duplicate> request_duplicate_packet;
+     class request_duplicate_ptr : public request_duplicate, public tbutil::Shared {
+     public:
+       virtual ~request_duplicate_ptr() {}
+     };
+     typedef tbutil::Handle<request_duplicate_ptr> request_duplicate_packet;
       typedef queue<request_duplicate_packet> packets_queue_type;
 
       bucket_waiting_queue(duplicate_sender_manager* psm, uint32_t bucket_number);
@@ -54,24 +63,26 @@ namespace tair {
       atomic_t packet_id_creater;
 
    };
-   class duplicate_sender_manager : public base_duplicator, public tbsys::CDefaultRunnable, public tbnet::IPacketHandler {
+   class duplicate_sender_manager : public base_duplicator, public tbsys::CDefaultRunnable {
    public:
 
-      duplicate_sender_manager( tbnet::Transport *transport,
-                                tair_packet_streamer *streamer, table_manager* table_mgr);
+      duplicate_sender_manager(table_manager* table_mgr);
       ~duplicate_sender_manager();
       void do_hash_table_changed();
       void set_max_queue_size(uint32_t max_queue_size) {
          this->max_queue_size = max_queue_size;
       }
+      void set_dup_timeout(int ms) {
+        dup_timeout = ms;
+      }
 
       bool is_bucket_available(uint32_t bucket_id);
 
 
-      int duplicate_data(int area, const data_entry* key, const data_entry* value, int expire_time,
-                          int bucket_number, const vector<uint64_t>& des_server_ids, base_packet *request, int version);
+      int duplicate_data(int area, const data_entry* key, const data_entry* value,
+                          int bucket_number, const vector<uint64_t>& des_server_ids, easy_request_t *r);
 
-      int direct_send(int area, const data_entry* key, const data_entry* value,int  expire_time,
+      int direct_send(easy_request_t *r, int area, const data_entry* key, const data_entry* value,
             int bucket_number, const vector<uint64_t>& des_server_ids,uint32_t max_packet_id);
 
       bool has_bucket_duplicate_done(int bucket_number);
@@ -80,12 +91,24 @@ namespace tair {
 
       void run(tbsys::CThread *thread, void *arg);
 
-      tbnet::IPacketHandler::HPRetCode handlePacket(tbnet::Packet *packet, void *args);
-
       friend class bucket_waiting_queue;
    private:
+      int packet_handler(easy_request_t *r);
+      static int packet_handler_cb(easy_request_t *r) {
+        if (r->ms->c == NULL) {
+          easy_session_destroy(r->ms);
+          return EASY_ERROR;
+        }
+
+        duplicate_sender_manager *_this = (duplicate_sender_manager*) r->ms->c->handler->user_data;
+        return _this->packet_handler(r);
+      }
+
+      easy_io_handler_pt handler;
+      easy_io_t eio;
+      int dup_timeout;
+   private:
       table_manager* table_mgr;
-      tbnet::ConnectionManager* conn_mgr;
       map<uint32_t, bucket_waiting_queue> packets_mgr;
       tbsys::CRWSimpleLock packages_mgr_mutex;
       volatile int have_data_to_send;

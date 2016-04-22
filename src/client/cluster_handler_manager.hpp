@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: cluster_handler_manager.hpp 1140 2012-09-18 03:32:01Z nayan@taobao.com $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -142,7 +142,7 @@ namespace tair
     }
 
   private:
-    // use one tair client implementation tair_client_impl 
+    // use one tair client implementation tair_client_impl
     tair_client_impl* client_;
     // cluster information
     cluster_info info_;
@@ -233,7 +233,7 @@ namespace tair
                            sharding_type type);
     ~handlers_node();
 
-    void update(const CLUSTER_INFO_LIST& cluster_infos, const handlers_node& diff_handlers_node);
+    bool update(const CLUSTER_INFO_LIST& cluster_infos, const handlers_node& diff_handlers_node);
     cluster_handler* pick_handler(const tair::common::data_entry& key);
     cluster_handler* pick_handler(const cluster_info& info);
     cluster_handler* pick_handler(int32_t index, const tair::common::data_entry& key);
@@ -279,11 +279,11 @@ namespace tair
     }
     inline sharding_type get_sharding_type()
     {
-      return sharding_type_;        
+      return sharding_type_;
     }
 
   private:
-    void construct_handler_map(const CLUSTER_INFO_LIST& cluster_infos,
+    bool construct_handler_map(const CLUSTER_INFO_LIST& cluster_infos,
                                const handlers_node& diff_handlers_node);
     void construct_handlers(CLUSTER_HANDLER_MAP_ITER_LIST& has_down_server_handlers);
     void construct_extra_bucket_map(CLUSTER_HANDLER_MAP_ITER_LIST& has_down_server_handlers);
@@ -312,7 +312,7 @@ namespace tair
     int32_t bucket_count_;
 
     // whether sharding bucket use map strategy(default hash).
-    // maybe some other strategies type, 
+    // maybe some other strategies type,
     sharding_type sharding_type_;
 
     // to lookup handler by cluster_info when update

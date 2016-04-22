@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  * Packet about Statistics command
- *   View stat 
+ *   View stat
  *   Set flow upbond
  *   Reset flow control
  * Authors:
@@ -18,10 +18,10 @@
 #include "base_packet.hpp"
 #include "stat_manager.h"
 
-namespace tair 
+namespace tair
 {
 
-struct stat_arg 
+struct stat_arg
 {
   uint32_t ip;
   uint16_t ns;
@@ -32,7 +32,7 @@ struct stat_arg
   uint32_t cnt;
 };
 
-class stat_cmd_view_packet : public base_packet 
+class stat_cmd_view_packet : public base_packet
 {
  private:
   stat_arg arg;
@@ -53,13 +53,17 @@ class stat_cmd_view_packet : public base_packet
     return arg;
   }
 
-  bool encode(tbnet::DataBuffer *output)
+  virtual base_packet::Type get_type() {
+    return base_packet::REQ_SPECIAL;
+  }
+
+  bool encode(DataBuffer *output)
   {
     output->writeBytes((char *)&arg, sizeof(arg));
     return true;
   }
 
-  bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+  bool decode(DataBuffer *input, PacketHeader *header)
   {
     if(size_t(header->_dataLen) < sizeof(arg)) {
       return false;
@@ -68,15 +72,17 @@ class stat_cmd_view_packet : public base_packet
     return true;
   }
 
-  virtual size_t size() 
+  virtual size_t size() const
   {
     return sizeof(arg);
   }
 
-  virtual uint16_t ns()
+  virtual uint16_t ns() const
   {
     return 0;
   }
+ private:
+  stat_cmd_view_packet(const stat_cmd_view_packet&);
 };
 
 }

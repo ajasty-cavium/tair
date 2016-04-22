@@ -5,9 +5,9 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  *
- * conf_server_table_manager.cpp is to store and load the hashtable 
+ * conf_server_table_manager.cpp is to store and load the hashtable
  *
- * Version: $Id$
+ * Version: $Id: conf_server_table_manager.cpp 1961 2013-11-20 09:57:21Z dutor $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -19,6 +19,7 @@
 namespace tair {
   namespace config_server {
     using namespace std;
+
     void conf_server_table_manager::init()
     {
       flag = client_version = server_version = server_bucket_count =
@@ -33,11 +34,33 @@ namespace tair {
         hash_table_deflate_data_for_data_server_size = 0;
       file_opened = false;
 
+      if (transition_version != NULL) {
+        delete transition_version;
+      }
+      if (recovery_version != NULL) {
+        delete recovery_version;
+      }
+      if (recovery_block_count != NULL) {
+        delete recovery_block_count;
+      }
+
+      transition_version = new uint32_t();
+      recovery_version = new uint32_t();
+      recovery_block_count = new int32_t();
+      *transition_version = 0;
+      *recovery_version = 0;
+      *recovery_block_count = -1;
     }
+
     conf_server_table_manager::conf_server_table_manager()
     {
+      transition_version = NULL;
+      recovery_version = NULL;
+      recovery_block_count = NULL;
+
       init();
     }
+
     conf_server_table_manager::~conf_server_table_manager()
     {
       if(hash_table_deflate_data_for_client) {
@@ -47,7 +70,14 @@ namespace tair {
         free(hash_table_deflate_data_for_data_server);
       }
       close();
+
+      // there are some much code use function `close`,
+      // for less change, more safe, so take this ugly way
+      delete transition_version;
+      delete recovery_version;
+      delete recovery_block_count;
     }
+
     void conf_server_table_manager::print_table() const
     {
       print_info();
@@ -303,6 +333,7 @@ namespace tair {
       mmap_file.close_file();
       init();
     }
+
     void conf_server_table_manager::sync()
     {
       mmap_file.sync_file();
@@ -370,7 +401,7 @@ namespace tair {
         hash_table_deflate_size = dest_len;
         memcpy(hash_table_deflate_data, dest, hash_table_deflate_size);
 
-        log_info("[%s] hashCount: %d, compress: %d => %d", file_name.c_str(),
+        log_info("[%s] hashCount: %d, compress: %lu => %lu", file_name.c_str(),
                  index, source_len, dest_len);
       }
       else {

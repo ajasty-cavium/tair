@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: mdb_factory.hpp 1140 2012-09-18 03:32:01Z nayan@taobao.com $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>

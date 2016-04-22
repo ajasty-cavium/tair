@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: conf_server_table_manager.hpp 1961 2013-11-20 09:57:21Z dutor $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -75,16 +75,31 @@ namespace tair {
         return d_hash_table;
       }
     private:
-        conf_server_table_manager(const conf_server_table_manager &);
-        conf_server_table_manager & operator=(const conf_server_table_manager
-                                              &);
+      conf_server_table_manager(const conf_server_table_manager &);
+      conf_server_table_manager & operator=(const conf_server_table_manager&);
+
       void init();
       char *map_meta_data();
-        std::string file_name;
+
+    private:
+      // We define table(group) status as follows:
+      // 1. normal status: all hash tables(hash_table/m_hash_table/d_hash_table) are the same.
+      // 2. transition status: there is difference among hash tables,
+      //    and we may want dataserver to accept what it is(based on specified transition status),
+      //    instead of caring the difference (calculate to migrate eg.).
+      //    Now transition status includes migrating and failovering.
+      std::string file_name;
 
       uint32_t *flag;
+      // version for client
       uint32_t *client_version;
+      // version for normal status
       uint32_t *server_version;
+      // version for transition status
+      uint32_t *transition_version;
+      // version for recovery status
+      uint32_t *recovery_version;
+      int32_t *recovery_block_count;
       uint32_t *plugins_version;
       uint32_t *area_capacity_version;
       uint32_t *last_load_config_time;

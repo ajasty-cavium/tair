@@ -7,7 +7,7 @@
  *
  * this packet is for query statistcs from configserver
  *
- * Version: $Id$
+ * Version: $Id: query_info_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -23,10 +23,11 @@ namespace tair {
       enum {
          Q_AREA_CAPACITY = 1,
          Q_MIG_INFO,
-         Q_DATA_SEVER_INFO,
+         Q_DATA_SERVER_INFO,
          Q_GROUP_INFO,
          Q_STAT_INFO,
       };
+
       request_query_info()
       {
          setPCode(TAIR_REQ_QUERY_INFO_PACKET);
@@ -38,7 +39,11 @@ namespace tair {
       {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+        return base_packet::REQ_SPECIAL;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(query_type);
          output->writeString(group_name.c_str());
@@ -46,7 +51,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 12) {
             log_warn( "buffer data too few.");
@@ -63,12 +68,12 @@ namespace tair {
          return true;
       }
 
-
    public:
       uint32_t   query_type;
       string     group_name;
       uint64_t   server_id;
-
+   private:
+      request_query_info(const request_query_info&);
    };
 
    class response_query_info : public base_packet {
@@ -78,7 +83,11 @@ namespace tair {
          setPCode(TAIR_RESP_QUERY_INFO_PACKET);
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+        return base_packet::RESP_COMMON;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(map_k_v.size());
          for (map<string, string>::iterator it = map_k_v.begin(); it != map_k_v.end(); it++) {
@@ -88,7 +97,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 4) {
             log_warn( "buffer data too few.");
@@ -117,6 +126,8 @@ namespace tair {
 
    public:
       map<string, string> map_k_v;
+   private:
+      response_query_info(const response_query_info&);
    };
 }
 #endif

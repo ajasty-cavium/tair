@@ -1,0 +1,234 @@
+var express = require('express');
+var mysql = require('mysql');
+
+var pool = mysql.createPool({
+  host: 'localhost',
+  user: 'username',
+  password: 'password',
+  insecureAuth: 'true',
+  database: 'rsync',
+  port: 3306
+});
+
+var app = express();
+
+app.configure(function() {
+  app.use(express.methodOverride());
+  app.use(express.bodyParser());
+  app.use(app.router);
+});
+
+// NODE_ENV=development node server.js
+app.configure('development', function() {
+  app.use(express.static(__dirname + '/public'));
+  app.use(express.errorHandler({ dumpException: true, showStack: true}));
+});
+
+// NODE_ENV=production node server.js
+app.configure('production', function() {
+  app.use(express.static(__dirname + '/public'));
+  app.use(express.errorHandler());
+});
+
+String.format = function(src){
+  if (arguments.length == 0) return null;
+  var args = Array.prototype.slice.call(arguments, 1);
+  return src.replace(/\{(\d+)\}/g, function(m, i){
+    return args[i];
+  });
+};
+
+app.get('/', function(req, resp) {
+  resp.sendfile(__dirname + '/public/index.html');
+});
+
+app.get('/images/:img', function(req, resp) {
+  resp.sendfile(__dirname + '/public/images/' + req.params.img);
+});
+
+app.get('/edit', function(req, resp) {
+  resp.sendfile(__dirname + '/public/edit.html');
+});
+
+app.get('/view', function(req, resp) {
+  resp.sendfile(__dirname + '/public/index.html');
+});
+
+var selectSummarySQL = 'select location, gp from config';
+app.get('/all', function(req, resp) {
+  pool.getConnection(function(err, connection) {
+    connection.query(selectSummarySQL, function(err, rows, fields) {
+      connection.release();
+      if (err) {
+        resp.send('{"code": 1, "msg": "' + err + '"}');
+      } else {
+        if (rows.length == 0) {
+          resp.writeHead(200, {'Content-Type': 'application/json'});
+          resp.write('{"code": 2, "msg": "data not exist"}');
+          resp.end();
+        } else {
+          var retObject = new Object();
+          retObject.code = 0;
+          retObject.msg = 'success';
+          retObject.data = new Array();
+          for (var i = 0; i < rows.length; i++) {
+            var obj = new Object();
+            obj.group = rows[i].gp;
+            obj.unit = rows[i].location;
+            retObject.data.push(obj);
+          }
+          resp.writeHead(200, {'Content-Type': 'application/json'});
+          console.log(JSON.stringify(retObject));
+          resp.write(JSON.stringify(retObject));
+          resp.end();
+        }
+      }
+    })
+  });
+});
+
+var selectSQL = 'select content,version from config where location = \'{0}\' and gp = \'{1}\'';
+app.get('/:unit/:group', function(req, resp, next) {
+  if (req.params.unit == 'unit') {
+    next();
+  } else {
+    pool.getConnection(function(err, connection) {
+      console.log(req.params.unit + " " + req.params.group);
+      connection.query(String.format(selectSQL, req.params.unit, req.params.group), function(err, rows, fields) {
+        connection.release();
+        if (err) {
+          resp.send('{"code": 1, "msg": "' + err + '"}');
+        } else {
+          if (rows.length == 0) {
+            resp.writeHead(200, {'Content-Type': 'application/json'});
+            resp.write('{"code": 2, "msg": "data not exist"}');
+            resp.end();
+          } else {
+            var content = rows[0].content;
+            var version = parseInt(rows[0].version);
+            var obj = JSON.parse(content);
+            obj.version = version;
+            obj.code = 0;
+            obj.msg = 'success';
+            resp.writeHead(200, {'Content-Type': 'application/json'});
+            resp.write(JSON.stringify(obj));
+            resp.end();
+          }
+        }
+      });
+    });
+  }
+});
+
+var selectbygroupSQL = 'select location, content, version from config where gp = \'{0}\'';
+app.get('/unit/:group', function(req, resp, next) {
+  pool.getConnection(function(err, connection) {
+    var sql = String.format(selectbygroupSQL, req.params.group);
+    connection.query(sql, function(err, rows, fields) {
+      connection.release();
+      if (err) {
+        resp.writeHead(200, {'Content-Type': 'application/json'});
+        resp.write(JSON.stringify({
+          code: 1,
+          msg: err
+        }));
+        resp.end();
+      } else {
+        if (rows.length == 0) {
+          resp.writeHead(200, {'Content-Type': 'application/json'});
+          resp.write(JSON.stringify({
+            code : 2,
+            msg : 'data not exists'
+          }));
+          resp.end();
+        } else {
+          var obj = new Object();
+          var arr = new Array();
+          for (var i = 0; i < rows.length; i++) {
+            var obj = JSON.parse(rows[i].content);
+            obj.version = rows[i].version;
+            arr.push(obj);
+          }
+          obj.data = arr;
+          obj.code = code;
+          obj.msg = "success";
+          resp.writeHead(200, {'Content-Type': 'application/json'});
+          resp.write(JSON.stringify(obj));
+          resp.end();
+        }
+      }
+    });
+  });
+});
+
+var selectbylocationSQL = 'select gp, content, version from config where location = \'{0}\'';
+app.get('/:unit', function(req, resp, next) {
+  pool.getConnection(function(err, connection) {
+    var sql = String.format(selectbylocationSQL, req.params.unit);
+    connection.query(sql, function(err, rows, fields) {
+      connection.release();
+      if (err) {
+        resp.writeHead(200, {'Content-Type': 'application/json'});
+        resp.write(JSON.stringify({
+          code : 1,
+          msg: err
+        }));
+        resp.end();
+      } else {
+        if (rows.length == 0) {
+          resp.writeHead(200, {'Content-Type': 'application/json'});
+          resp.write(JSON.stringify({
+            code : 2,
+            msg : 'data not exist'
+          }));
+          resp.end();
+        } else {
+          var obj = new Object();
+          var arr = new Array();
+          for (var i = 0; i < rows.length; i++) {
+            var obj = JSON.parse(rows[i].content);
+            obj.version = rows[i].version;
+            arr.push(obj);
+          }
+          obj.data = arr;
+          obj.code = code;
+          obj.msg = "success";
+          resp.writeHead(200, {'Content-Type': 'application/json'});
+          resp.write(JSON.stringify(obj));
+          resp.end();
+        }
+      }
+    });
+  });
+});
+
+var insertSQL = 'insert into config(location, gp, content, version) values(\'{0}\', \'{1}\', \'{2}\',1) on duplicate key update content = \'{2}\', version = version + 1';
+app.post('/:unit/:group', function(req, resp) {
+  pool.getConnection(function(err, connection) {
+    console.log(req.body);
+    console.log('-------------------------------------');
+    var content = JSON.stringify(req.body);
+
+    // TODO check content
+
+    var sql = String.format(insertSQL, req.params.unit, req.params.group, content);
+    console.log(sql);
+    connection.query(sql, function(err, result) {
+      connection.release();
+      if (err) {
+        resp.writeHead(200, {'Content-Type': 'application/json'});
+        resp.write('{"code": 1, "msg": "' + err + '"}');
+        resp.end();
+      } else {
+        // save to database
+        resp.writeHead(200, {'Content-Type': 'application/json'});
+        resp.write('{"code": 0, "msg": "OK"}');
+        resp.end();
+      }
+    });
+  });
+});
+
+app.listen(8080);
+
+// conn.end();

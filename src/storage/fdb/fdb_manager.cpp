@@ -7,7 +7,7 @@
  *
  * storage engine interface impl
  *
- * Version: $Id$
+ * Version: $Id: fdb_manager.cpp 1046 2012-08-15 08:42:18Z yexiang $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>

@@ -7,7 +7,7 @@
  *
  * statistics impl
  *
- * Version: $Id$
+ * Version: $Id: stat_helper.cpp 1790 2013-08-22 14:07:48Z yexiang $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -17,6 +17,7 @@
 #include "stat_helper.hpp"
 namespace tair {
    stat_helper stat_helper::stat_helper_instance;
+   int stat_helper::stat_high_ops_count = 20000;
 
    stat_helper::stat_helper()
    {
@@ -38,6 +39,9 @@ namespace tair {
          free(compressed_data);
          compressed_data = NULL;
       }
+      if(stat != NULL) {
+        free(stat);
+      }
    }
 
    void stat_helper::run(tbsys::CThread *thread, void *arg)
@@ -54,7 +58,6 @@ namespace tair {
       assert (stat != NULL);
 
       memset(stat, 0, STAT_TOTAL_SIZE);
-
    }
 
    void stat_helper::stat_get(int area, int rc)
@@ -128,11 +131,19 @@ namespace tair {
       interval /= 1000000; // conver to second
       if (interval == 0) interval = 1;
 
-      log_debug("start calculate ratio, interval: %d", interval);
+      log_debug("start calculate ratio, interval: %"PRI64_PREFIX"u", interval);
       for (int i=0; i<STAT_LENGTH; i++) {
          tair_stat *cs = curr_stat + i;
-         cs->set_get_count(cs->get_count() / interval);
-         cs->set_put_count(cs->put_count() / interval);
+         int get_count = cs->get_count() / interval;
+         cs->set_get_count(get_count);
+         if (get_count > stat_high_ops_count) {
+            log_warn("high ops, namespace: %d, getcount: %d", i, get_count);
+         }
+         int put_count = cs->put_count() / interval;
+         cs->set_put_count(put_count);
+         if (put_count > stat_high_ops_count) {
+            log_warn("high ops, namespace: %d, putcount: %d", i, put_count);
+         }
          cs->set_evict_count(cs->evict_count() / interval);
          cs->set_remove_count(cs->remove_count() / interval);
          cs->set_hit_count(cs->hit_count() / interval);
@@ -159,7 +170,7 @@ namespace tair {
          compressed_data = (char *)malloc(dest_len);
          memcpy(compressed_data, dest, dest_len);
          data_size = dest_len;
-         log_debug("compress stats done (%d=>%d)", STAT_TOTAL_SIZE, dest_len);
+         log_debug("compress stats done (%d=>%lu)", STAT_TOTAL_SIZE, dest_len);
       } else {
          log_error("compress stats error: %d", ret);
       }

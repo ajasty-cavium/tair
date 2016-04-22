@@ -1,22 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bases>
-  <scm version="1.0">
 
+<bases> 
+  <scm version="1.0"> 
+    <app> 
+      <corp>集团</corp>  
+      <deptment> 
+        <main>技术共享平台</main>  
+        <sub>核心系统研发</sub>  
+        <three>存储</three> 
+      </deptment>  
+      <line> 
+        <main>核心系统</main>  
+        <sub>tair</sub> 
+      </line>  
+      <name>tair</name>  
+      <codetype>C/C++</codetype>  
+      <connection>http://code.taobao.org/svn/tair/trunk/</connection> 
+    </app>  
 
     <app>
-      <corp>集团</corp>
+      <corp>阿里云事业部</corp>
       <deptment>
-        <main>技术共享平台</main> 
-        <sub>核心系统研发</sub> 
-        <three>存储</three> 
+        <main>飞天二部</main> 
+        <sub>存储组</sub> 
+        <three></three> 
       </deptment>
       <line>
          <main>核心系统</main>
          <sub>tair</sub>
       </line>
-      <name>tair</name>
+      <name>kvstore-tair</name>
       <codetype>C/C++</codetype>
-      <connection>http://code.taobao.org/svn/tair/trunk/</connection>
+      <connection>http://svn.develop.taobao.net/repos/tair/branches/3.2.4/</connection>
+      <owner>minghang.zmh</owner>
     </app>
   </scm>
 </bases>

@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: mem_pool.hpp 1661 2013-07-03 13:33:14Z dutor $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>
@@ -14,9 +14,10 @@
  */
 #ifndef __MEM_POOL_H
 #define __MEM_POOL_H
-#include <iostream>
 #include <stdint.h>
 #include <stdio.h>
+#include "define.hpp"
+#include "mdb_stat.hpp"
 namespace tair {
 
   class mem_pool {
@@ -52,9 +53,13 @@ namespace tair {
     }
     static const int MAX_PAGES_NO = 65536;
     static const int MDB_VERSION_INFO_START = 12288;  //12k
+    static const int MDB_LOCK_INITED_START = MDB_VERSION_INFO_START + 4;
+    static const int MDB_LOCK_START = MDB_LOCK_INITED_START + 4;
     static const int MEM_HASH_METADATA_START = 16384;        //16K
-    static const int MDB_STATINFO_START = 32768;        //32K
-    static const int MEM_POOL_METADATA_LEN = 524288;        // 512K
+    static const int MDB_AREA_TIME_STAMP_START = 32768;        //32K
+    static const int MDB_BUCKET_COUNT_START = MDB_AREA_TIME_STAMP_START + sizeof(uint32_t) * TAIR_MAX_AREA_COUNT; 
+    static const int MDB_BUCKET_TIME_STAMP_START = MDB_BUCKET_COUNT_START + sizeof(uint32_t);
+    static const int MEM_POOL_METADATA_LEN = MDB_BUCKET_TIME_STAMP_START + sizeof(uint32_t) * TAIR_MAX_BUCKET_NUMBER;
   private:
     void initialize(char *pool, int page_size, int total_pages, int meta_len);
     static const int BITMAP_SIZE = (MAX_PAGES_NO + 7) / 8;

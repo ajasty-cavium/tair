@@ -7,7 +7,7 @@
  *
  * update log is for record updates while migrating
  *
- * Version: $Id$
+ * Version: $Id: update_log.cpp 2935 2014-09-09 09:35:24Z yunhen $
  *
  * Authors:
  *   fanggang <fanggang@taobao.com>
@@ -58,7 +58,7 @@ namespace tair {
       init();
    }
 
-   update_log::~update_log() 
+   update_log::~update_log()
    {
 
    }
@@ -132,9 +132,9 @@ namespace tair {
 
       writer = new log_writer(this, tail_lsn);
 
-      lsn_type last_lsn = get_hlsn();
-      lsn_type real_lsn = tail_lsn > last_lsn ? last_lsn : tail_lsn;
-      real_lsn = 0;
+//      lsn_type last_lsn = get_hlsn();
+//      lsn_type real_lsn = tail_lsn > last_lsn ? last_lsn : tail_lsn;
+//      real_lsn = 0;
    }
 
    void update_log::log(sn_operation_type operation_type, data_entry &key, data_entry &value, uint16_t db_id)
@@ -152,12 +152,35 @@ namespace tair {
       // so just use data_meta.prefixsize here
       key.data_meta.prefixsize = key.get_prefix_size();
       if (operation_type == SN_PUT) {
-         value_size = value.get_size();
-         if (key.data_meta.valsize == 0){
-            key.data_meta.valsize = value_size;
-         }
-         total_size += value_size;
+        value_size = value.get_size();
+        if (key.data_meta.valsize == 0){
+           key.data_meta.valsize = value_size;
+        }
+        total_size += value_size;
       }
+
+      if (key.data_meta.keysize != key_size
+          ||(operation_type == SN_PUT && key.data_meta.valsize != value_size)) {
+        log_error("keysize or valsize diff, keysize(%d), valsize(%d), key_size(%d), value_size(%d), op_type(%d)",
+                  key.data_meta.keysize, key.data_meta.valsize, key_size, value_size, operation_type);
+        // log key
+        if (key_size <= TAIR_MAX_KEY_SIZE + 2)
+        {
+          char *key_str = (char *) malloc(key_size * 2 + 1), *buf = key.get_data();
+          uint32_t i = 0, j = 0;
+          for (i = 0; i < key_size; i++) {
+            sprintf(key_str + j, "%02x", (uint8_t)buf[i]);
+            j += 2;
+          }
+          key_str[2 * i] = 0;
+          log_error("err key is %s", key_str);
+          free(key_str);
+        } else {
+          log_error("key_size(%d) err, drop it", key_size);
+        }
+        return;
+      }
+
       char *log_str = (char *)malloc(total_size);
       memcpy(log_str, &(key.data_meta), header_size);
       char *ptr = log_str + header_size;
@@ -185,7 +208,7 @@ namespace tair {
                return INVALID_LSN;
             if (restart_lsn != 0 && file_manager->find_log_file(restart_lsn - 1))
                break;
-            log_error("can not find lsn:llu%", restart_lsn);
+            log_error("can not find lsn: %"PRI64_PREFIX"u", restart_lsn);
          }
          restart_lsn = file->full() ? file->get_end_lsn() : max(restart_lsn, file->get_tail_hint());
       }while(file->full());
@@ -200,16 +223,13 @@ namespace tair {
          return tail_lsn;
       } else {
          lsn_type start_lsn = file->get_start_lsn();
-         if (tail_lsn == MIN_LSN) {
-            return MIN_LSN;
-         }
 
          uint size = file->get_size();
          char *buff = (char *)malloc(LOG_READ_BUFF_SIZE);
          uint32_t offset = tail_lsn - start_lsn + LOG_PAGE_HDR_SIZE;
          uint32_t read_len = file->read(buff, LOG_READ_BUFF_SIZE, offset);
          lsn_type next_lsn = tail_lsn;
-         lsn_type temp_lsn = 0;
+//         lsn_type temp_lsn = 0;
          uint32_t buf_offset  = 0;
 
          while(offset + buf_offset < size ){
@@ -223,7 +243,7 @@ namespace tair {
                uint32_t total_size = LOG_RECORD_HDR_TSIZE + key_size + val_size;
                if (total_size <= read_len - buf_offset) {
                   buf_offset += total_size;
-                  temp_lsn = next_lsn;
+//                  temp_lsn = next_lsn;
                   next_lsn = next_lsn + total_size;
                } else {
                   offset += buf_offset;
@@ -245,7 +265,7 @@ namespace tair {
       }
    }
 
-   void update_log::close() 
+   void update_log::close()
    {
       if (file_manager) {
          file_manager->close();
@@ -280,7 +300,7 @@ namespace tair {
    log_file* update_log::switch_log_file(lsn_type start_lsn)
    {
       lsn_type min_lsn = get_hlsn();
-      log_file *file = file_manager->find_reused_log_file(min_lsn);
+      log_file *file = is_migrating ? file_manager->find_reused_log_file(min_lsn) : NULL;
 
       if(file == NULL) {
          file = file_manager->create_new_file(start_lsn);
@@ -296,7 +316,7 @@ namespace tair {
       file_size = size;
    }
 
-   log_file_manager::~log_file_manager() 
+   log_file_manager::~log_file_manager()
    {
    }
 
@@ -344,7 +364,7 @@ namespace tair {
       return ss.str();
    }
 
-   void log_file_manager::set_log(update_log *log) 
+   void log_file_manager::set_log(update_log *log)
    {
       this->log = log;
    }
@@ -358,10 +378,10 @@ namespace tair {
          //lfm->createNewFile(MIN_LSN);
          return lfm;
       }
-      bool is_file_exist = false;
+//      bool is_file_exist = false;
       for (uint32_t i = 0; i < current_log_file_number; ++i) {
          if (access(lfm->make_file_name(i).c_str(), 0) == 0){
-            is_file_exist = true;
+//            is_file_exist = true;
          } else {
             log_error("log file %d not exist", i);
          }
@@ -411,7 +431,7 @@ namespace tair {
 
    log_file* log_file_manager::create_new_file(lsn_type start_lsn)
    {
-      log_debug("create log file timestamp: %llu", start_lsn);
+      log_debug("create log file timestamp: %"PRI64_PREFIX"u", start_lsn);
       mutex.lock();
       size_t file_num = log_files.size();
       std::string  file_name = make_file_name((uint32_t)file_num);
@@ -487,7 +507,7 @@ namespace tair {
    //reuse log file
    void log_file::reset(lsn_type startLsn)
   {
-      log_debug("reset log file startLsn: %llu", startLsn);
+      log_debug("reset log file startLsn: %"PRI64_PREFIX"u", startLsn);
       set_start_lsn(startLsn);
       set_end_lsn(startLsn  + FILE_PAYLOAD);
       set_tail_hint(startLsn);
@@ -502,12 +522,12 @@ namespace tair {
       write_control_page();
    }
 
-   void log_file::full(bool isFull) 
+   void log_file::full(bool isFull)
    {
       ctrl_page->full = isFull;
    }
 
-   uint32_t log_file::get_size() const 
+   uint32_t log_file::get_size() const
    {
       return (uint32_t)file->get_size();
    }
@@ -524,7 +544,7 @@ namespace tair {
       }
    }
 
-   void log_file::set_end_lsn(lsn_type lsn) 
+   void log_file::set_end_lsn(lsn_type lsn)
    {
       end_lsn_lock.wrlock();
       ctrl_page->end = lsn;
@@ -536,12 +556,12 @@ namespace tair {
       return ctrl_page->start;
    }
 
-   void log_file::set_start_lsn(lsn_type lsn) 
+   void log_file::set_start_lsn(lsn_type lsn)
    {
       ctrl_page->start = lsn;
    }
 
-   void log_file::set_tail_hint(lsn_type lsn) 
+   void log_file::set_tail_hint(lsn_type lsn)
    {
       ctrl_page->tail_hint = lsn;
    }
@@ -551,7 +571,7 @@ namespace tair {
       return ctrl_page->tail_hint;
    }
 
-   void log_file::write_control_page() 
+   void log_file::write_control_page()
    {
       bool rc = file->pwrite(ctrl_page, LOG_PAGE_HDR_SIZE, 0);
       if(!rc) {
@@ -587,7 +607,7 @@ namespace tair {
       return new_file;
    }
 
-   log_file::~log_file() 
+   log_file::~log_file()
    {
       free(ctrl_page);
       delete file;
@@ -617,6 +637,8 @@ namespace tair {
          log->set_flsn(end_lsn);
 
          cur_log_file = log->switch_log_file(cur_log_file->get_end_lsn());
+         log_info("change write file, file name is %s, start_lsn is %"PRI64_PREFIX"u, end_lsn is %"PRI64_PREFIX"u",
+                  cur_log_file->get_name(), cur_log_file->get_start_lsn(), cur_log_file->get_end_lsn());
          write_next = cur_log_file->get_start_lsn();
          offset = LOG_PAGE_HDR_SIZE;
          goto _Restart;
@@ -659,12 +681,12 @@ namespace tair {
       cur_log_file = file;
    }
 
-   log_file* log_writer::get_current_file() 
+   log_file* log_writer::get_current_file()
    {
       return cur_log_file;
    }
 
-   void log_writer::set_offset(uint32_t offset) 
+   void log_writer::set_offset(uint32_t offset)
    {
       offset = offset;
    }
@@ -779,7 +801,7 @@ namespace tair {
       offset = offset;
    }
 
-   void log_read_buffer::set_current_file(log_file *file) 
+   void log_read_buffer::set_current_file(log_file *file)
    {
       current_file = file;
    }
@@ -789,7 +811,7 @@ namespace tair {
       return offset;
    }
 
-   uint32_t log_read_buffer::get_buffer_offset() 
+   uint32_t log_read_buffer::get_buffer_offset()
    {
       return buffer_offset;
    }
@@ -799,6 +821,8 @@ namespace tair {
       assert(end_lsn > lsn);
       if (has_read == false) {
          current_file = file_mgr->find_log_file(lsn, true);
+         log_info("first read, file name is %s, start_lsn is %"PRI64_PREFIX"u, end_lsn is %"PRI64_PREFIX"u",
+                  current_file->get_name(), current_file->get_start_lsn(), current_file->get_end_lsn());
          offset = lsn - current_file->get_start_lsn() + LOG_PAGE_HDR_SIZE;
          uint64_t lsn_offset = (uint64_t)(end_lsn - lsn);
          uint read_size =(uint)(size > lsn_offset ? lsn_offset : size);
@@ -808,6 +832,8 @@ namespace tair {
 
       if(lsn >= current_file->get_end_lsn(true)){
          current_file = file_mgr->find_log_file(lsn, true);
+         log_info("change read file, file name is %s, start_lsn is %"PRI64_PREFIX"u, end_lsn is %"PRI64_PREFIX"u",
+                  current_file->get_name(), current_file->get_start_lsn(), current_file->get_end_lsn());
          buffer_offset = 0;
          offset = LOG_PAGE_HDR_SIZE;
          uint64_t lsn_offset = (uint64_t)(end_lsn - lsn);
@@ -865,7 +891,7 @@ namespace tair {
       return NULL;
    }
 
-   log_read_buffer::~log_read_buffer() 
+   log_read_buffer::~log_read_buffer()
    {
       if (buffer != NULL){
          free(buffer);
@@ -876,7 +902,7 @@ namespace tair {
    {
       return lsn;
    }
-   const log_record_entry* log_scan_hander::get_log_entry() const 
+   const log_record_entry* log_scan_hander::get_log_entry() const
    {
       return log_entry;
    }
@@ -931,12 +957,12 @@ namespace tair {
          return ctrl_file;
       }
    }
-   
+
    void control_file::reset() {
      memset(ctrl_file_hdr, 0, CTRL_FILE_HDR_SIZE);
      write_control_file();
    }
-   
+
    void control_file::close()
    {
       write_control_file();
@@ -979,4 +1005,43 @@ namespace tair {
       ctr_file->set_hlsn(lsn);
    }
 
+   update_log* update_log::reset()
+   {
+     // save the file name
+     uint32_t tmp_log_file_number, tmp_file_size;
+
+     tmp_log_file_number = log_file_number;
+     tmp_file_size = file_size;
+
+     string file_path(base_name, strlen(base_name));
+     size_t pos = file_path.find_last_of("/");
+     string dir = file_path.substr(0, pos);
+     string name = file_path.substr(pos + 1, file_path.size() - pos);
+
+     close();
+
+     // delete files
+     bool is_dir = tbsys::CFileUtil::isDirectory(dir.c_str());
+     if (is_dir)
+     {
+       struct dirent **name_list;
+       int n;
+       n = scandir(dir.c_str(), &name_list, 0, NULL);
+       if (n < 0) {
+          log_error("scan log dir error");
+       } else {
+          while (n--) {
+             // delte name_list[n]
+             string sub_name = dir;
+             sub_name.append("/").append(name_list[n]->d_name);
+             remove(sub_name.c_str());
+             free(name_list[n]);
+          }
+          free(name_list);
+       }
+     }
+
+     // open again
+     return open(dir.c_str(), name.c_str(), tmp_log_file_number, false, tmp_file_size);
+   }
 }

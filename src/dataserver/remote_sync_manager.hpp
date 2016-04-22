@@ -10,7 +10,7 @@
  *   Data synchronization is based on record logger interface, so different
  *   user should implement its own record logger(reader/writer).
  *
- * Version: $Id$
+ * Version: $Id: remote_sync_manager.hpp 2935 2014-09-09 09:35:24Z yunhen $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -31,134 +31,31 @@ namespace std {
 #endif
 
 #include <tbsys.h>
+#include <string>
 
 #include "common/tair_atomic.hpp"
 #include "client/tair_client_api_impl.hpp"
-
-class tair::common::RecordLogger;
+#include "i_remote_sync_manager.hpp"
+#include "cluster_handler.hpp"
 
 namespace tair
 {
+  namespace common
+  {
+    class data_entry;
+	  class RecordLogger;
+  }
+
   class tair_client_impl;
   class tair_manager;
-  class ClusterHandler;
 
   typedef std::unordered_map<std::string, ClusterHandler*> CLUSTER_HANDLER_MAP;
-
-  // cluster conf and client handler
-  class ClusterHandler
-  {
-  public:
-    ClusterHandler() : client_(NULL)
-    {}
-    ~ClusterHandler()
-    {
-      if (client_ != NULL)
-      {
-        delete client_;
-        client_ = NULL;
-      }
-    }
-
-    inline bool conf_inited() 
-    {
-      return !master_cs_addr_.empty();
-    }
-    inline int init_conf(const std::string& info, int32_t timeout_ms, int32_t queue_limit)
-    {
-      info_ = info;
-      timeout_ms_ = timeout_ms;
-      queue_limit_ = queue_limit;
-      return decode_info();
-    }
-    inline int init_conf(std::vector<std::string>& conf)
-    {
-      int ret = TAIR_RETURN_FAILED;
-      if (conf.size() == 5)
-      {
-        master_cs_addr_ = conf[0];
-        slave_cs_addr_ = conf[1];
-        group_name_ = conf[2];
-        timeout_ms_ = atoi(conf[3].c_str());
-        queue_limit_ = atoi(conf[4].c_str());
-
-        encode_info();
-        ret = TAIR_RETURN_SUCCESS;
-      }
-      return ret;
-    }
-    inline int start()
-    {
-      if (client_ == NULL)
-      {
-        client_ = new tair_client_impl();
-        client_->set_timeout(timeout_ms_);
-        client_->set_queue_limit(queue_limit_);
-      }
-
-      return client_->startup(master_cs_addr_.c_str(), slave_cs_addr_.c_str(), group_name_.c_str()) ?
-        TAIR_RETURN_SUCCESS : TAIR_RETURN_FAILED;
-    }
-    inline tair_client_impl* client()
-    {
-      return client_;
-    }
-    inline std::string& info()
-    {
-      return info_;
-    }
-    inline int32_t get_queue_limit()
-    {
-      return queue_limit_;        
-    }
-    inline void encode_info()
-    {
-      char buf[sizeof(uint64_t)*2];
-      tair::util::coding_util::
-        encode_fixed64(buf,
-                       tbsys::CNetUtil::strToAddr(master_cs_addr_.c_str(), TAIR_CONFIG_SERVER_DEFAULT_PORT));
-      tair::util::coding_util::
-        encode_fixed64(buf+sizeof(uint64_t),
-                       tbsys::CNetUtil::strToAddr(slave_cs_addr_.c_str(), TAIR_CONFIG_SERVER_DEFAULT_PORT));
-      info_.clear();
-      info_.reserve(sizeof(buf) + group_name_.size());
-      info_.append(buf, sizeof(buf));
-      info_.append(group_name_);
-    }
-    inline int decode_info()
-    {
-      int ret = TAIR_RETURN_FAILED;
-      if (info_.size() > sizeof(uint64_t) * 2)
-      {
-        master_cs_addr_ = tbsys::CNetUtil::addrToString(tair::util::coding_util::decode_fixed64(info_.c_str()));
-        slave_cs_addr_ = tbsys::CNetUtil::addrToString(tair::util::coding_util::decode_fixed64(info_.c_str() + sizeof(uint64_t)));
-        group_name_ = info_.substr(sizeof(uint64_t)*2);
-        ret = TAIR_RETURN_SUCCESS;
-      }
-      return ret;
-    }
-    inline std::string debug_string()
-    {
-      char tmp[32];
-      snprintf(tmp, sizeof(tmp), "%d,%d", timeout_ms_, queue_limit_);
-      return std::string("[") + master_cs_addr_ + "," + slave_cs_addr_ + "," + group_name_ + "," + tmp + "]";
-    }
-
-  private:
-    tair_client_impl* client_;
-    std::string master_cs_addr_;
-    std::string slave_cs_addr_;
-    std::string group_name_;
-    int32_t timeout_ms_;
-    int32_t queue_limit_;
-    std::string info_;
-  };
 
   // failed record stuff
   typedef struct FailRecord
   {
     FailRecord() : key_(NULL), scratch_(NULL), scratch_size_(0) {}
-    FailRecord(common::data_entry* key, std::string& cluster_info, int code)
+    FailRecord(common::data_entry* key, std::string cluster_info, int code)
       : key_(key), cluster_info_(cluster_info), code_(code), scratch_(NULL), scratch_size_(0) {}
     FailRecord(const char* data, int32_t size) : scratch_(NULL), scratch_size_(0)
     {
@@ -270,7 +167,7 @@ namespace tair
     volatile uint32_t ref_;
   } DataEntryWrapper;
 
-  class RemoteSyncManager : public tbsys::CDefaultRunnable
+  class RemoteSyncManager : public tbsys::CDefaultRunnable, public IRemoteSyncManager
   {
     // remote synchronization callback arg
     typedef struct CallbackArg
@@ -297,13 +194,15 @@ namespace tair
 
   public:
     explicit RemoteSyncManager(tair_manager* tair_manager);
-    ~RemoteSyncManager();
+    virtual ~RemoteSyncManager();
 
     int init();
     int add_record(TairRemoteSyncType type, data_entry* key, data_entry* value);
     void run(tbsys::CThread*, void* arg);
 
-    int pause(bool do_pause);
+    virtual void pause(bool do_pause);
+    virtual void set_wait_us(int64_t us);
+    virtual int64_t get_wait_us();
     int set_mtime_care(bool care);
 
     static void callback(int ret, void* arg);
@@ -348,6 +247,10 @@ namespace tair
     // rsync process has paused
     bool paused_;
 
+    // followings are all for flow control simply,
+    // TODO: control dynamically..
+    // wait us each op
+    uint64_t wait_us_;
     // rsync max process count allowed
     uint64_t max_process_count_;
     // rsync processing count

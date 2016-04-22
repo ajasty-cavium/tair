@@ -78,20 +78,20 @@ static args_t args;
 static char   *kbuf = NULL;
 static char   *vbuf = NULL;
 static int    mod = '~' - ' ' + 1;
-static pthread_mutex_t *mtx = NULL;
 static uint32_t nproc_done = 0;
 
 int
 main(int argc, char **argv) {
   parse_args(argc, argv);
   signal(SIGCHLD, sig_chld_handler);
+  mdb_log_level("warn");
 
   mdb_t db = init();
   if (db == NULL) {
     fprintf(stderr, "mdb init failed\n");
     exit(1);
   }
-  mdb_set_quota(db, args.area, args.quota);
+  mdb_set_quota(db, args.area, args.quota<<20);
   if (args.item_count < args.nproc) {
     fprintf(stderr, "item_count less than nproc");
     destroy(db);
@@ -156,22 +156,14 @@ mdb_t init() {
   memset(kbuf, 0, MAX_KEY_SIZE);
   memset(vbuf, 0, MAX_VALUE_SIZE);
 
-  mtx = (pthread_mutex_t*)mmap(NULL, sizeof(pthread_mutex_t), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANON, -1, 0);
-  if (mtx == MAP_FAILED) {
-    perror("mmap");
-    return NULL;
-  } else {
-    pthread_mutexattr_t attr;
-    pthread_mutexattr_init(&attr);
-    pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
-    pthread_mutex_init(mtx, &attr);
-  }
-
   mdb_param_t params;
   memset(&params, 0, sizeof(mdb_param_t));
   params.mdb_type = args.mem_type;
   params.mdb_path = args.shm_path;
-  params.size = args.mem_size;
+  params.inst_shift = 1;
+  params.lock_pshared = true;
+  params.use_check_thread = false;
+  params.size = args.mem_size<<30;
   mdb_t db = mdb_init(&params);
   return db;
 }
@@ -179,15 +171,13 @@ mdb_t init() {
 void destroy(mdb_t db) {
   delete [] kbuf;
   delete [] vbuf;
-  pthread_mutex_destroy(mtx);
-  munmap(mtx, sizeof(pthread_mutex_t));
   mdb_destroy(db);
 }
 
 void parse_args(int argc, char **argv) {
   args.nproc = 2;
-  args.area = 3;
-  args.mem_size = 1LL<<30;
+  args.area = 65535;
+  args.mem_size = 4;
   //args.quota = args.mem_size>>2;
   args.quota = 0;
   args.item_count = 1<<16;
@@ -195,7 +185,7 @@ void parse_args(int argc, char **argv) {
   args.max_value_size = 64;
   args.min_value_size = 64;
   args.mem_type = "mdb_shm";
-  args.shm_path = "/libmdb_shm";
+  args.shm_path = "/libmdb_inst";
   args.action_type = "put";
   args.action_mode = "rand";
   args.log = NULL;
@@ -204,49 +194,49 @@ void parse_args(int argc, char **argv) {
   int ret = 0;
   while((ret = getopt(argc, argv, "n:p:s:k:v:l:q:t:m:a:c:r:h")) != -1) {
     switch (ret) {
-    case 'n':
-      args.nproc = atoi(optarg);
-      if (args.nproc > MAX_PROCESS_NUM) {
-        args.nproc = MAX_PROCESS_NUM;
-      }
-      break;
-    case 'p':
-      args.shm_path = optarg;
-      break;
-    case 's':
-      args.mem_size = atoll(optarg);
-      break;
-    case 'm':
-      args.mem_type = optarg;
-      break;
-    case 't':
-      args.action_type = optarg;
-      break;
-    case 'l':
-      args.log = optarg;
-      break;
-    case 'k':
-      args.key_size = atoi(optarg);
-      break;
-    case 'v':
-      sscanf(optarg, "%u-%u", &args.min_value_size, &args.max_value_size);
-      if (args.max_value_size < args.min_value_size) {
-        std::swap(args.max_value_size, args.min_value_size);
-      }
-      break;
-    case 'q':
-      args.quota = atoll(optarg);
-      break;
-    case 'c':
-      args.item_count = atoi(optarg);
-      break;
-    case 'r':
-      args.action_mode = optarg;
-      break;
-    case 'h':
-    default:
-      //usage(argv[0]);
-      exit(0);
+      case 'n':
+        args.nproc = atoi(optarg);
+        if (args.nproc > MAX_PROCESS_NUM) {
+          args.nproc = MAX_PROCESS_NUM;
+        }
+        break;
+      case 'p':
+        args.shm_path = optarg;
+        break;
+      case 's':
+        args.mem_size = atoll(optarg);
+        break;
+      case 'm':
+        args.mem_type = optarg;
+        break;
+      case 't':
+        args.action_type = optarg;
+        break;
+      case 'l':
+        args.log = optarg;
+        break;
+      case 'k':
+        args.key_size = atoi(optarg);
+        break;
+      case 'v':
+        sscanf(optarg, "%u-%u", &args.min_value_size, &args.max_value_size);
+        if (args.max_value_size < args.min_value_size) {
+          std::swap(args.max_value_size, args.min_value_size);
+        }
+        break;
+      case 'q':
+        args.quota = atoll(optarg);
+        break;
+      case 'c':
+        args.item_count = atoi(optarg);
+        break;
+      case 'r':
+        args.action_mode = optarg;
+        break;
+      case 'h':
+      default:
+        //usage(argv[0]);
+        exit(0);
     };
   }
 }
@@ -272,7 +262,7 @@ char *genv(int size) {
   if (it != vmap.end()) {
     value = (char*)malloc(size);
     //for (int i = 0; i < size; ++i) {
-      //value[i] = rand()%mod + ' ';
+    //value[i] = rand()%mod + ' ';
     //}
     //value[size-1] = 0;
     vmap.insert(std::make_pair(size, value));
@@ -302,9 +292,7 @@ void test_put(mdb_t db, int id) {
     value.data = genv(value_size);
     value.size = value_size;
 
-    //pthread_mutex_lock(mtx);
     int rc = mdb_put(db, args.area, &key, &value, 0, 1, 0);
-    //pthread_mutex_unlock(mtx);
     if (rc == 0) {
       ++put_result.nsuccess;
     } else {
@@ -327,9 +315,7 @@ void test_get(mdb_t db, int id) {
     key.size = args.key_size;
     value.data = NULL;
     value.size = 0;
-    pthread_mutex_lock(mtx);
     int rc = mdb_get(db, args.area, &key, &value, NULL, NULL);
-    pthread_mutex_unlock(mtx);
     if (rc == 0) {
       ++get_result.nsuccess;
       free(value.data);
@@ -351,9 +337,7 @@ void test_del(mdb_t db, int id) {
   for (size_t i = proc_params[id].key_start; i < proc_params[id].key_end; ++i) {
     key.data = genk(args.key_size, i, false);
     key.size = args.key_size;
-    pthread_mutex_lock(mtx);
     int rc = mdb_del(db, args.area, &key, false);
-    pthread_mutex_unlock(mtx);
     if (rc == 0) {
       ++del_result.nsuccess;
     } else {
@@ -374,9 +358,7 @@ void test_lookup(mdb_t db, int id) {
   for (size_t i = proc_params[id].key_start; i < proc_params[id].key_end; ++i) {
     key.data = genk(args.key_size, i, false);
     key.size = args.key_size;
-    pthread_mutex_lock(mtx);
     bool rc = mdb_lookup(db, args.area, &key);
-    pthread_mutex_unlock(mtx);
     if (rc == true) {
       ++lookup_result.nsuccess;
     } else {

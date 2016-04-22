@@ -26,6 +26,10 @@ namespace tair {
         request_hide_by_proxy(request_hide_by_proxy &packet): request_invalid(packet) {
             setPCode(TAIR_REQ_HIDE_BY_PROXY_PACKET);
         }
+
+        virtual base_packet::Type get_type() {
+          return base_packet::REQ_WRITE;
+        }
     };
 }
 #endif

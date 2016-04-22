@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: base_plugin.hpp 602 2012-03-08 02:19:58Z xinshu.wzx@taobao.com $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>

@@ -1,5 +1,4 @@
 #include "tbsys.h"
-#include "tbnet.h"
 #include "snappy_compressor.hpp"
 
 #ifndef TAIR_DATA_ENTRY_COMPRESS

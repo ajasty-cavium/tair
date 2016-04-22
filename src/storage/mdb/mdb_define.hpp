@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: mdb_define.hpp 1686 2013-07-12 05:33:40Z dutor $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>
@@ -21,9 +21,18 @@
 #define TAIR_SLAB_HASH_MAXDEPTH      8
 
 #include <map>
+#include <sys/unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 
 struct mdb_param
 {
+  static bool lock_pshared;
+  static bool use_check_thread;
+  static bool enable_put_remove_expired;
+  static uint32_t inst_shift;
   static const char *mdb_type;
   static const char *mdb_path;
   static int64_t size;
@@ -35,13 +44,22 @@ struct mdb_param
   static int chkexprd_time_low;
   static int chkexprd_time_high;
 
+  static int mem_merge_time_low;
+  static int mem_merge_time_high;
+  static int mem_merge_move_count;
+
   static int chkslab_time_low;
   static int chkslab_time_high;
+  static int check_granularity;
+  static int check_granularity_factor;
 
   static std::map<uint32_t, uint64_t> default_area_capacity;
 };
 
 bool hour_range(int min, int max);
 
+char *open_shared_mem(const char *path, int64_t size);
+
+double get_timespec();
 
 #endif /*MDB_DEFINE_H_ */

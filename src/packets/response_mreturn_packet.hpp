@@ -45,7 +45,11 @@ namespace tair {
       }
     }
 
-    bool encode(tbnet::DataBuffer *output)
+    virtual base_packet::Type get_type() {
+      return base_packet::RESP_COMMON;
+    }
+
+    bool encode(DataBuffer *output)
     {
       output->writeInt32(config_version);
       output->writeInt32(code);
@@ -63,7 +67,7 @@ namespace tair {
       return true;
     }
 
-    bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+    bool decode(DataBuffer *input, PacketHeader *header)
     {
       if (header->_dataLen < 12) {
         return false;
@@ -101,7 +105,7 @@ namespace tair {
       ++key_count;
     }
 
-    void set_code(int code)
+    virtual void set_code(int code)
     {
       this->code = code;
     }
@@ -127,6 +131,37 @@ namespace tair {
       std::swap(key_count, rhs.key_count);
       std::swap(key_code_map, rhs.key_code_map);
     }
+
+    //@override
+    // 这里用 virtual，因为在prefix_puts、prefix_removes、prefix_hides里，
+    // 可能通过基类response_mreturn指针，来调用子类response_mreturn_dup中的size()方法
+    virtual size_t size() const
+    {
+      if (UNLIKELY(getDataLen() != 0))
+        return getDataLen() + 16;
+
+      size_t sz = 4 + 4 + 4;
+      if (msg[0])
+      {
+        sz += strlen(msg);
+      }
+      if (key_code_map != NULL)
+      {
+        key_code_map_t::const_iterator itr = key_code_map->begin();
+        while (itr != key_code_map->end())
+        {
+          sz += itr->first->encoded_size() + 4;
+          ++itr;
+        }
+      }
+      return sz + 16; // header 16 bytes
+    }
+
+    virtual bool failed() const
+    {
+      return code != TAIR_RETURN_SUCCESS;
+    }
+
   public:
     int code;
     uint32_t config_version;
@@ -150,7 +185,11 @@ namespace tair {
     }
     ~response_mreturn_dup() { }
 
-    bool encode(tbnet::DataBuffer *output) {
+    virtual base_packet::Type get_type() {
+      return base_packet::RESP_COMMON;
+    }
+
+    bool encode(DataBuffer *output) {
       if (!response_mreturn::encode(output)) {
         return false;
       }
@@ -160,7 +199,7 @@ namespace tair {
       return true;
     }
 
-    bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) {
+    bool decode(DataBuffer *input, PacketHeader *header) {
       if (!response_mreturn::decode(input, header)) {
         return false;
       }
@@ -170,10 +209,19 @@ namespace tair {
       return true;
     }
 
+    virtual size_t size() const
+    {
+      if (UNLIKELY(getDataLen() != 0))
+         return getDataLen() + 16;
+      return response_mreturn::size() + 4 + 4 + 8;
+    }
+
   public:
     uint64_t server_id;
     uint32_t packet_id;
     int32_t  bucket_id;
+  private:
+    response_mreturn_dup(const response_mreturn_dup&);
   };
 }
 

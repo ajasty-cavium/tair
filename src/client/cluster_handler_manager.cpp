@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: cluster_handler_manager.cpp 2935 2014-09-09 09:35:24Z yunhen $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -105,21 +105,25 @@ namespace tair
     clear(false);
   }
 
-  void handlers_node::update(const CLUSTER_INFO_LIST& cluster_infos, const handlers_node& diff_handlers_node)
+  bool handlers_node::update(const CLUSTER_INFO_LIST& cluster_infos, const handlers_node& diff_handlers_node)
   {
-    CLUSTER_HANDLER_MAP_ITER_LIST has_down_server_handlers;
-
     // construct new handler_map
-    construct_handler_map(cluster_infos, diff_handlers_node);
-    // construct new handlers
-    construct_handlers(has_down_server_handlers);
-    // construct new extra_bucket_map
-    construct_extra_bucket_map(has_down_server_handlers);
-    // check sharding type
-    if (sharding_type_ == MAP_SHARDING_TYPE)
+    // construct_hanlder_map will send request to cs to get group info, if retrieve ok, success is true
+    bool success = construct_handler_map(cluster_infos, diff_handlers_node);
+    if (success)
     {
-      map_sharding_bucket(diff_handlers_node);
+      CLUSTER_HANDLER_MAP_ITER_LIST has_down_server_handlers;
+      // construct new handlers
+      construct_handlers(has_down_server_handlers);
+      // construct new extra_bucket_map
+      construct_extra_bucket_map(has_down_server_handlers);
+      // check sharding type
+      if (sharding_type_ == MAP_SHARDING_TYPE)
+      {
+        map_sharding_bucket(diff_handlers_node);
+      }
     }
+    return success;
   }
 
   cluster_handler* handlers_node::pick_handler(const data_entry& key)
@@ -212,23 +216,27 @@ namespace tair
     }
   }
 
-  void handlers_node::construct_handler_map(const CLUSTER_INFO_LIST& cluster_infos,
+  bool handlers_node::construct_handler_map(const CLUSTER_INFO_LIST& cluster_infos,
                                             const handlers_node& diff_handlers_node)
   {
-    handler_map_->clear();
+    bool success = true;
+
     if (cluster_infos.empty())
     {
-      return;
+      log_warn("cluster_infos is null, check server config.");
+      return success;
     }
 
     int ret = TAIR_RETURN_SUCCESS;
     cluster_handler* handler = NULL;
     bool new_handler = false;
+    CLUSTER_HANDLER_MAP tmp_old_handler_map, tmp_new_handler_map;
 
     for (CLUSTER_INFO_LIST::const_iterator info_it = cluster_infos.begin(); info_it != cluster_infos.end(); ++info_it)
     {
       // already operate
-      if (handler_map_->find(*info_it) != handler_map_->end())
+      if ((tmp_old_handler_map.find(*info_it) != tmp_old_handler_map.end()) ||
+          (tmp_new_handler_map.find(*info_it) != tmp_new_handler_map.end()))
       {
         continue;
       }
@@ -251,6 +259,7 @@ namespace tair
         {
           log_error("start cluster handler fail. info: %s", info_it->debug_string().c_str());
           delete handler;
+          handler = NULL;
           continue;
         }
       }
@@ -264,6 +273,7 @@ namespace tair
         // must be a new handler
         assert(new_handler);
         delete handler;
+        handler = NULL;
       }
 
       // update bucket count
@@ -283,8 +293,19 @@ namespace tair
         if (new_handler)
         {
           delete handler;
+          handler = NULL;
         }
-        continue;
+        // if request timeout, remain former status
+        if (TAIR_RETURN_TIMEOUT == ret)
+        {
+          log_warn("handler retrieve failed, set return failed, retry later");
+          success = false;
+          break;
+        }
+        else
+        {
+          continue;
+        }
       }
 
       // check get cluster status
@@ -299,14 +320,21 @@ namespace tair
         if (new_handler)
         {
           delete handler;
+          handler = NULL;
         }
         continue;
       }
 
-
       handler->reset();
       // this handler will at service.
-      (*handler_map_)[*info_it] = handler;
+      if (new_handler)
+      {
+        tmp_new_handler_map[*info_it] = handler;
+      }
+      else
+      {
+        tmp_old_handler_map[*info_it] = handler;
+      }
 
       // check cluster servers
       std::vector<std::string> down_servers;
@@ -329,6 +357,31 @@ namespace tair
         }
       }
     }
+
+    if (success)
+    {
+      // once succeed, add both old and new handlers to handler_map
+      handler_map_->clear();
+      for (CLUSTER_HANDLER_MAP::iterator it = tmp_old_handler_map.begin(); it != tmp_old_handler_map.end(); ++it)
+      {
+        (*handler_map_)[it->first] = it->second;
+      }
+      for (CLUSTER_HANDLER_MAP::iterator it = tmp_new_handler_map.begin(); it != tmp_new_handler_map.end(); ++it)
+      {
+        (*handler_map_)[it->first] = it->second;
+      }
+    }
+    else
+    {
+      // once failed, delete new handlers
+      for (CLUSTER_HANDLER_MAP::iterator it = tmp_new_handler_map.begin(); it != tmp_new_handler_map.end(); ++it)
+      {
+        delete it->second;
+        it->second = NULL;
+      }
+    }
+
+    return success;
   }
 
   void handlers_node::construct_handlers(CLUSTER_HANDLER_MAP_ITER_LIST& has_down_server_handlers)
@@ -513,7 +566,7 @@ namespace tair
       }
     }
 
-    log_debug("need reshard bucket: %d", reshard_buckets->size());
+    log_debug("need reshard bucket: %lu", reshard_buckets->size());
 
     for (std::unordered_map<cluster_info, std::vector<int32_t>, hash_cluster_info>::iterator
            it = sharding_buckets.begin(); it != sharding_buckets.end(); ++it)
@@ -704,7 +757,16 @@ namespace tair
                         new BUCKET_INDEX_MAP(),
                         current_->get_sharding_type());
     new_handlers_node->set_timeout(timeout_ms_);
-    new_handlers_node->update(cluster_infos, *current_);
+    bool success = new_handlers_node->update(cluster_infos, *current_);
+
+    if (!success)
+    {
+      delete new_handlers_node;
+      new_handlers_node = NULL;
+      urgent = true;
+      log_error("get cs config failed, not update, change urgent status to %s", urgent ? "true" : "false");
+      return urgent;
+    }
 
     if (new_handlers_node->handler_map_->empty())
     {
@@ -756,7 +818,7 @@ namespace tair
   cluster_handler* bucket_shard_cluster_handler_manager::pick_handler(const cluster_info& info)
   {
     tbsys::CThreadGuard guard(&lock_);
-    return current_->pick_handler(info);      
+    return current_->pick_handler(info);
   }
 
   cluster_handler* bucket_shard_cluster_handler_manager::pick_handler(int32_t index, const tair::common::data_entry& key)

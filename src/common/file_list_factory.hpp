@@ -18,7 +18,6 @@
 #include <ext/hash_map>
 
 #include <tbsys.h>
-#include <tbnet.h>
 #include "file_op.hpp" 
 #include "define.hpp" 
 #include "log.hpp"
@@ -142,7 +141,6 @@ namespace tair{
     if(read_len<LOG_RECORD_SIZE)
     {
       log_error("read logfile faild. read_len: %d", read_len);
-      delete [] puffer;
       return false;
     }
     int _count=read_len/LOG_RECORD_SIZE;
@@ -164,8 +162,6 @@ namespace tair{
         delete value; value=NULL;
       }
     }
-
-    delete [] puffer;
     return true;
   }
 
@@ -205,7 +201,7 @@ namespace tair{
     int64_t file_size = file_->get_file_size();
     if (file_size <= 0)
     {
-      log_debug("get log file size=%d, ignore",file_size);
+      log_debug("get log file size=%lu, ignore",file_size);
       count = 0;
     }
     else

@@ -30,11 +30,27 @@ namespace tair
       cmd = TAIR_SERVER_CMD_MIN_TYPE;
     }
 
+    request_op_cmd(const request_op_cmd& packet)
+      : base_packet(packet)
+    {
+      setPCode(TAIR_REQ_OP_CMD_PACKET);
+      cmd = packet.cmd;
+      params.clear();
+      for (std::vector<std::string>::const_iterator it = packet.params.begin();
+          it != packet.params.end(); ++it) {
+        params.push_back(*it);
+      }
+    }
+
     virtual ~request_op_cmd()
     {
     }
 
-    bool encode(tbnet::DataBuffer *output)
+    virtual base_packet::Type get_type() {
+      return base_packet::REQ_SPECIAL;
+    }
+
+    bool encode(DataBuffer *output)
     {
       output->writeInt32(cmd);
       output->writeInt32(params.size());
@@ -44,7 +60,7 @@ namespace tair
       return true;
     }
 
-    bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+    bool decode(DataBuffer *input, PacketHeader *header)
     {
       cmd = static_cast<ServerCmdType>(input->readInt32());
       int param_count = input->readInt32();
@@ -66,6 +82,7 @@ namespace tair
       }
     }
 
+  public:
     ServerCmdType cmd;
     std::vector<std::string> params;
   };
@@ -77,7 +94,11 @@ namespace tair
       code = 0;
     }
 
-    bool encode(tbnet::DataBuffer *output) {
+    virtual base_packet::Type get_type() {
+      return base_packet::RESP_COMMON;
+    }
+
+    bool encode(DataBuffer *output) {
       output->writeInt32(code);
       output->writeInt32(infos.size());
       for (size_t i = 0; i < infos.size(); ++i) {
@@ -86,7 +107,7 @@ namespace tair
       return true;
     }
 
-    bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) {
+    bool decode(DataBuffer *input, PacketHeader *header) {
       code = input->readInt32();
       int ninfo = input->readInt32();
       if (ninfo < 0) {

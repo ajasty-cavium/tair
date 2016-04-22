@@ -7,7 +7,7 @@
  *
  * ping packet
  *
- * Version: $Id$
+ * Version: $Id: ping_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -28,29 +28,30 @@ namespace tair {
          value = 0;
       }
 
-
-      request_ping(request_ping &packet)
+      request_ping(const request_ping &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_PING_PACKET);
          config_version = packet.config_version;
          value = packet.value;
       }
 
-
-      ~request_ping() 
+      ~request_ping()
       {
       }
 
+      virtual base_packet::Type get_type() {
+        return base_packet::REQ_SPECIAL;
+      }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(config_version);
          output->writeInt32(value);
          return true;
       }
 
-
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 8) {
             log_warn( "buffer data too few.");

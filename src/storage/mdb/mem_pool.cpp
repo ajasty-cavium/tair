@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: mem_pool.cpp 1790 2013-08-22 14:07:48Z yexiang $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>
@@ -40,10 +40,6 @@ namespace tair {
 
   mem_pool::~mem_pool()
   {
-    if (impl->pool != NULL)
-    {
-      munmap(impl->pool, static_cast<int64_t>(impl->page_size) * impl->total_pages);
-    }
   }
 
   char *mem_pool::alloc_page()

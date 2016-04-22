@@ -7,7 +7,7 @@
  *
  * this dump manager is used when we ask the data servers to dump data for us
  *
- * Version: $Id$
+ * Version: $Id: dump_manager.cpp 79 2010-12-30 08:25:15Z maoqi@taobao.com $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>

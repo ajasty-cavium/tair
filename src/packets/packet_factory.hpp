@@ -7,32 +7,33 @@
  *
  * packet factory creates packet according to packet code
  *
- * Version: $Id$
+ * Version: $Id: packet_factory.hpp 2476 2014-05-07 08:32:03Z dutor $
  *
  * Authors:
- *   ruohai <ruohai@taobao.com>
- *     - initial release
+ *   gy <ganyu.hfl@taobao.com>
+ *     - add easy
  *
  */
 #ifndef TAIR_PACKET_FACTORY_H
 #define TAIR_PACKET_FACTORY_H
 #include "base_packet.hpp"
+#include <easy_io.h>
+#include <easy_io_struct.h>
+#include <easy_string.h>
+#include <databuffer.hpp>
 namespace tair {
-   class tair_packet_factory : public tbnet::IPacketFactory {
-   public:
-       tair_packet_factory() {}
-      ~tair_packet_factory();
-
-      tbnet::Packet *createPacket(int pcode);
-
-      static int set_return_packet(base_packet *packet, int code,const char *msg, uint32_t version)
-      {
-        uint32_t size = 0;
-        return set_return_packet(packet, code, msg, version, size);
-      }
-
-      static int set_return_packet(base_packet *packet, int code,const char *msg, uint32_t version, uint32_t &resp_size);
-      static int set_return_packet(tbnet::Connection *conn,uint32_t chid,int cmd_id,int code,const char *msg,uint32_t version);
-   };
+class packet_factory {
+public:
+  packet_factory() {}
+  ~packet_factory() {}
+public:
+  static void* decode_cb(easy_message_t *m);
+  static int   encode_cb(easy_request_t *r, void *packet);
+  static uint64_t get_packet_id_cb(easy_connection_t *c, void *packet);
+  static base_packet* create_packet(int pcode);
+  static base_packet* create_dup_packet(base_packet *ipacket);
+  static base_packet* create_response(const base_packet *p);
+  static easy_atomic32_t chid;
+};
 }
 #endif

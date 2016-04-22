@@ -7,7 +7,7 @@
  *
  * server_conf_threa.cpp is the thread of config server
  *
- * Version: $Id$
+ * Version: $Id: server_conf_thread.cpp 2942 2014-09-12 10:26:34Z yunhen $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -15,28 +15,29 @@
  */
 #include "server_conf_thread.hpp"
 #include "server_info_allocator.hpp"
-#include "stat_helper.hpp"
 #include "util.hpp"
 #include "response_return_packet.hpp"
+#include "easy_helper.hpp"
+#include "packet_factory.hpp"
 namespace {
   const int HARD_CHECK_MIG_COMPLETE = 300;
 }
 
 namespace tair {
   namespace config_server {
-
-    server_conf_thread::server_conf_thread():builder_thread(this)
+    server_conf_thread::server_conf_thread(easy_io_t *eio): builder_thread(this)
     {
       master_config_server_id = 0;
       struct timespec tm;
       clock_gettime(CLOCK_MONOTONIC, &tm);
       heartbeat_curr_time = tm.tv_sec;
       stat_interval_time = 5;
-      connmgr = NULL;
-      connmgr_heartbeat = NULL;
       is_ready = false;
       down_slave_config_server = 0U;
-      load_config_server();
+
+      this->eio = eio;
+      easy_helper::init_handler(&handler, this);
+      handler.process = packet_handler_cb;
     }
 
     server_conf_thread::~server_conf_thread()
@@ -51,55 +52,13 @@ namespace tair {
       for(size_t i = 0; i < group_info_list.size(); i++) {
         delete group_info_list[i];
       }
-      if(connmgr) {
-        delete connmgr;
-      }
-      if(connmgr_heartbeat) {
-        delete connmgr_heartbeat;
-      }
     }
 
-    void server_conf_thread::set_thread_parameter(tbnet::Transport *
-                                                  transport,
-                                                  tbnet::Transport *
-                                                  transport_heartbeat,
-                                                  tair_packet_streamer *
-                                                  streamer)
+    int server_conf_thread::packet_handler(easy_request_t *r)
     {
-      connmgr = new tbnet::ConnectionManager(transport, streamer, this);
-      connmgr_heartbeat =
-        new tbnet::ConnectionManager(transport_heartbeat, streamer, this);
-    }
-      /**
-       * implementaion of IPacketHandler
-       */
-    tbnet::IPacketHandler::HPRetCode server_conf_thread::handlePacket(tbnet::
-                                                                      Packet *
-                                                                      packet,
-                                                                      void
-                                                                      *args)
-    {
-      if(!packet->isRegularPacket()) {
-        tbnet::ControlPacket * cp = (tbnet::ControlPacket *) packet;
-        log_warn("ControlPacket, cmd:%d", cp->getCommand());
-        if(cp->getCommand() == tbnet::ControlPacket::CMD_DISCONN_PACKET) {
-          return tbnet::IPacketHandler::FREE_CHANNEL;
-        }
-      }
-      int id = (int) ((long) args);
-      if(id) {
-        if(packet->isRegularPacket()) {
-          my_wait_object_manager.wakeup_wait_object(id,
-                                                    (base_packet *) packet);
-        }
-        else {
-          my_wait_object_manager.wakeup_wait_object(id, NULL);
-        }
-      }
-      else if(packet->isRegularPacket()) {
-        packet->free();
-      }
-      return tbnet::IPacketHandler::KEEP_CHANNEL;
+      int rc = r->ipacket != NULL ? EASY_OK : EASY_ERROR;
+      easy_session_destroy(r->ms);
+      return rc;
     }
     uint32_t server_conf_thread::get_file_time(const char *file_name)
     {
@@ -119,8 +78,9 @@ namespace tair {
     {
       if(file_name == NULL)
         return;
+      tbsys::CThreadGuard guard(&group_file_mutex);
       tbsys::CConfig config;
-      if(config.load((char *) file_name) == EXIT_FAILURE) {
+      if (TAIR_RETURN_SUCCESS != load_conf(file_name, config)){
         log_error("load config file %s error", file_name);
         return;
       }
@@ -154,15 +114,16 @@ namespace tair {
         if(it == group_info_map_data.end()) {
           group_info_tmp =
             new group_info((char *) section_list[i].c_str(),
-                           &data_server_info_map, connmgr);
+                           &data_server_info_map, eio);
           group_info_map_data[group_info_tmp->get_group_name()] =
             group_info_tmp;
         }
         else {
           group_info_tmp = it->second;
+          // rebuild failover status here, table not change
+          group_info_tmp->force_check_failover();
         }
         group_info_tmp->load_config(config, version, server_id_list);
-        group_info_tmp->find_available_server();
       }
 
       set <uint64_t> map_id_list;
@@ -189,8 +150,9 @@ namespace tair {
         it->second->correct_server_info(sync_config_server_id
                                         && sync_config_server_id !=
                                         util::local_server_ip::ip);
+        it->second->find_available_server();
       }
-      log_info("machine count: %d, group count: %d",
+      log_info("machine count: %lu, group count: %lu",
                data_server_info_map.size(), group_info_map_data.size());
       server_info_rw_locker.unlock();
       group_info_rw_locker.unlock();
@@ -201,85 +163,110 @@ namespace tair {
       set<group_info *>change_group_info_list;
 
       group_info_map::iterator it;
-      for(it = group_info_map_data.begin(); it != group_info_map_data.end();
-          ++it) {
-        if(it->second->is_need_rebuild()) {
+      for(it = group_info_map_data.begin(); it != group_info_map_data.end(); ++it)
+      {
+        if(it->second->is_need_rebuild())
           change_group_info_list.insert(it->second);
-        }
       }
-
-      server_info_map::iterator sit;
-      for(sit = data_server_info_map.begin();
-          sit != data_server_info_map.end(); ++sit) {
+      for(server_info_map::iterator sit= data_server_info_map.begin(); sit != data_server_info_map.end(); ++sit)
+      {
+        if (sit->second->status == server_info::DOWN)
+          continue;
         //a bad one is alive again, we do not mark it ok unless some one tould us to.
         //administrator can touch group.conf to let these data serve alive again.
-        uint32_t now;                // this decide how many seconds since last heart beat, we will mark this data server as a bad one.
-        if(sit->second->group_info_data) {
-          now =
-            heartbeat_curr_time -
-            sit->second->group_info_data->get_server_down_time();
-        }
-        else {
-          now = heartbeat_curr_time - TAIR_SERVER_DOWNTIME;
-        }
-        if(sit->second->status != server_info::DOWN) {
-          if((sit->second->last_time < now && (sit->second->status == server_info::ALIVE && !tbnet::ConnectionManager::isAlive(sit->second->server_id))) || sit->second->status == server_info::FORCE_DOWN) {        // downhost
-            change_group_info_list.insert(sit->second->group_info_data);
-            sit->second->status = server_info::DOWN;
-            log_warn("HOST DOWN: %s lastTime is %u now is %u ",
-                     tbsys::CNetUtil::addrToString(sit->second->server_id).
-                     c_str(), sit->second->last_time, heartbeat_curr_time);
+        // this decide how many seconds since last heart beat, we will mark this data server as a bad one.
+        int32_t down_interval;
+        if(LIKELY(sit->second->group_info_data))
+          down_interval = sit->second->group_info_data->get_server_down_time();
+        else
+          down_interval = TAIR_SERVER_DOWNTIME;
 
-            // if (need add down server config) then set downserver in group.conf
-            if (sit->second->group_info_data->get_pre_load_flag() == 1)
-            {
-              log_error("add down host: %s lastTime is %u now is %u ",
-                  tbsys::CNetUtil::addrToString(sit->second->server_id).
-                  c_str(), sit->second->last_time, heartbeat_curr_time);
-              sit->second->group_info_data->add_down_server(sit->second->server_id);
-              sit->second->group_info_data->set_force_send_table();
-            }
+        uint32_t one_interval_before = heartbeat_curr_time - down_interval;
+
+        // recieve heartbeat in one interval,last time belong to [one_interval_before, +Infinity), ok
+        if (LIKELY(sit->second->last_time >= one_interval_before))
+            continue;
+
+        // recieve heartbeat, last time belong to [two_interval_before, one_interval_before) && is_alive() == true, ok
+        uint32_t two_interval_before = one_interval_before - down_interval;
+        if ((sit->second->last_time >= two_interval_before) && easy_helper::is_alive(sit->second->server_id, eio))
+          continue;
+
+        //  (+Infinity, two_interval_before), or ([two_interval_before, one_interval_before) && is_alive() == false), down
+        if(sit->second->status == server_info::ALIVE)
+        {
+          // rebuild, downhost
+          change_group_info_list.insert(sit->second->group_info_data);
+          sit->second->status = server_info::DOWN;
+          log_warn("HOST DOWN: %s lastTime is %u now is %u ",
+                   tbsys::CNetUtil::addrToString(sit->second->server_id).
+                   c_str(), sit->second->last_time, heartbeat_curr_time);
+          // try to failover this down ds.
+          if(master_config_server_id == util::local_server_ip::ip)
+            sit->second->group_info_data->pending_failover_server(sit->first);
+
+          // if (need add down server config) then set downserver in group.conf
+          if (sit->second->group_info_data->get_pre_load_flag() == 1)
+          {
+            log_error("add down host: %s lastTime is %u now is %u ",
+                      tbsys::CNetUtil::addrToString(sit->second->server_id).
+                      c_str(), sit->second->last_time, heartbeat_curr_time);
+            sit->second->group_info_data->add_down_server(sit->second->server_id);
+            sit->second->group_info_data->set_force_send_table();
           }
         }
-      }
+        else if(sit->second->status == server_info::STANDBY)
+        {
+          // standby server down, no need to rebuild, only set status
+          sit->second->status = server_info::DOWN;
+          log_warn("STANDBY NODE DOWN: %s lastTime is %u now is %u ",
+                   tbsys::CNetUtil::addrToString(sit->second->server_id).
+                   c_str(), sit->second->last_time, heartbeat_curr_time);
+        }
+      } // end of for()
       // only master config server can update hashtable.
-      if(master_config_server_id != util::local_server_ip::ip) {
+      if(master_config_server_id != util::local_server_ip::ip)
         return;
-      }
 
       uint64_t slave_server_id = get_slave_server_id();
 
       group_info_rw_locker.rdlock();
-
       if(loop_count % HARD_CHECK_MIG_COMPLETE == 0) {
         for(group_info_map::const_iterator it = group_info_map_data.begin();
             it != group_info_map_data.end(); it++) {
           it->second->hard_check_migrate_complete(slave_server_id);
         }
       }
+      group_info_rw_locker.unlock();
 
       for(it = group_info_map_data.begin(); it != group_info_map_data.end();
           ++it) {
-        it->second->check_migrate_complete(slave_server_id);
+        it->second->check_migrate_complete(slave_server_id, &group_info_rw_locker);
+        it->second->check_recovery_complete(slave_server_id, &group_info_rw_locker);
+      }
 
+      group_info_rw_locker.rdlock();
+      for(it = group_info_map_data.begin(); it != group_info_map_data.end(); ++it)
+      {
         // check if send server_table
         if (1 == it->second->get_send_server_table())
         {
-          log_warn("group: %s need send server table", it->second->get_group_name());
+          log_info("group: %s need send server table", it->second->get_group_name());
           it->second->send_server_table_packet(slave_server_id);
           it->second->reset_force_send_table();
         }
       }
 
-      if(change_group_info_list.size() == 0U) {
+      if(change_group_info_list.size() == 0U)
+      {
         group_info_rw_locker.unlock();
         return;
       }
 
       set<group_info *>::iterator cit;
       tbsys::CThreadGuard guard(&mutex_grp_need_build);
-      for(cit = change_group_info_list.begin();
-          cit != change_group_info_list.end(); ++cit) {
+      for(cit = change_group_info_list.begin(); cit != change_group_info_list.end(); ++cit)
+      {
         builder_thread.group_need_build.push_back(*cit);
         (*cit)->set_table_builded();
       }
@@ -301,7 +288,7 @@ namespace tair {
           continue;
         }
         if(server_info_tmp->last_time < now && server_info_tmp->status == server_info::ALIVE) {        // downhost
-          if(tbnet::ConnectionManager::isAlive(server_info_tmp->server_id) ==
+          if(easy_helper::is_alive(server_info_tmp->server_id, eio) ==
              true)
             continue;
           server_info_tmp->status = server_info::DOWN;
@@ -380,7 +367,7 @@ namespace tair {
         if(config_server_info_map.find(id) == config_server_info_map.end()) {
           server_info *server_info =
             server_info_allocator::server_info_allocator_instance.
-            new_server_info(NULL, id);
+            new_server_info(NULL, id, eio, true);
           config_server_info_map[id] = server_info;
           config_server_info_list.push_back(server_info);
         }
@@ -453,6 +440,8 @@ namespace tair {
           group_info_rw_locker.rdlock();
           for(it = group_info_map_data.begin();
               it != group_info_map_data.end(); ++it) {
+            if (it->second->is_failovering())
+              continue;
             if(rebuild_this_group) {
               it->second->set_force_rebuild();
             }
@@ -507,8 +496,8 @@ namespace tair {
           request_conf_heartbeart *new_packet = new request_conf_heartbeart();
           new_packet->server_id = util::local_server_ip::ip;
           new_packet->loop_count = loop_count;
-          if(connmgr_heartbeat->
-             sendPacket(server_info_it->server_id, new_packet) == false) {
+          if(easy_helper::easy_async_send(eio, server_info_it->server_id,
+                new_packet, this, &handler) == EASY_ERROR) {
             delete new_packet;
           }
         }
@@ -551,6 +540,7 @@ namespace tair {
                                              response_get_group * resp)
     {
       if(is_ready == false) {
+        log_error("server_conf_thread is not ready");
         return;
       }
 
@@ -559,6 +549,7 @@ namespace tair {
       it = group_info_map_data.find(req->group_name);
       if(it == group_info_map_data.end()) {
         group_info_rw_locker.unlock();
+        log_warn("group info not found, group_name : %s", req->group_name);
         return;
       }
       group_info *group_info_found = it->second;
@@ -588,41 +579,121 @@ namespace tair {
         stat_interval_time = stat_interval_time_v;
       }
     }
-    void server_conf_thread::
-      force_change_server_status(request_data_server_ctrl * packet)
-    {
-      log_warn
-        ("receive forceChangeCommand from %s make data server %s chang to %d",
-         tbsys::CNetUtil::addrToString(packet->get_connection()->
-                                       getServerId()).c_str(),
-         tbsys::CNetUtil::addrToString(packet->server_id).c_str(),
-         packet->cmd);
 
-      server_info_rw_locker.rdlock();
-      server_info_map::iterator it =
-        data_server_info_map.find(packet->server_id);
-      if(it == data_server_info_map.end()) {
+    void server_conf_thread::
+    change_server_list_to_group_file(request_data_server_ctrl* req, response_data_server_ctrl* resp)
+    {
+      const char *group_file_name = TBSYS_CONFIG.getString(CONFSERVER_SECTION, TAIR_GROUP_FILE, NULL);
+      resp->return_code.clear();
+      vector<string> keys(req->server_id_list.size(), TAIR_STR_SERVER_LIST);
+      vector<string> values;
+      vector<util::file_util::OpResult> results;
+
+      for (vector<uint64_t>::const_iterator it = req->server_id_list.begin();
+           it != req->server_id_list.end(); ++it)
+        values.push_back(tbsys::CNetUtil::addrToString(*it));
+
+      {
+        tbsys::CThreadGuard guard(&group_file_mutex);
+        group_info_rw_locker.rdlock();
+        server_info_rw_locker.rdlock();
+        if (DATASERVER_CTRL_OP_DELETE == req->op_cmd || DATASERVER_CTRL_OP_ADD == req->op_cmd)
+        {
+          util::file_util::FileUtilChangeType op_type = (DATASERVER_CTRL_OP_DELETE == req->op_cmd?
+                                                         util::file_util::CHANGE_FILE_DELETE:
+                                                         util::file_util::CHANGE_FILE_ADD);
+          util::file_util::change_file_manipulate_kv(group_file_name, op_type, req->group_name, '=',
+                                                     keys, values, results);
+          for (vector<util::file_util::OpResult>::const_iterator it = results.begin(); it != results.end(); ++it)
+          {
+            switch (*it)
+            {
+              case util::file_util::RETURN_SUCCESS:
+                resp->return_code.push_back(DATASERVER_CTRL_RETURN_SUCCESS);
+                break;
+              case util::file_util::RETURN_KEY_VALUE_NUM_NOT_EQUAL:
+                resp->return_code.push_back(DATASERVER_CTRL_RETURN_NR);
+                break;
+              case util::file_util::RETURN_OPEN_FILE_FAILED:
+                resp->return_code.push_back(DATASERVER_CTRL_RETURN_FILE_OP_FAILED);
+                break;
+              case util::file_util::RETURN_SECTION_NAME_NOT_FOUND:
+                resp->return_code.push_back(DATASERVER_CTRL_RETURN_GROUP_NOT_FOUND);
+                break;
+              case util::file_util::RETURN_KEY_VALUE_NOT_FOUND:
+                resp->return_code.push_back(DATASERVER_CTRL_RETURN_SERVER_NOT_FOUND);
+                break;
+              case util::file_util::RETURN_KEY_VALUE_ALREADY_EXIST:
+                resp->return_code.push_back(DATASERVER_CTRL_RETURN_SERVER_EXIST);
+                break;
+              case util::file_util::RETURN_SAVE_FILE_FAILD:
+                resp->return_code.push_back(DATASERVER_CTRL_RETURN_FILE_OP_FAILED);
+                break;
+              case util::file_util::RETURN_INVAL_OP_TYPE:
+                resp->return_code.push_back(DATASERVER_CTRL_RETURN_NR);
+                break;
+              default:
+                resp->return_code.push_back(DATASERVER_CTRL_RETURN_NR);
+            }
+          }
+        }
+        else
+          resp->return_code.assign(req->server_id_list.size(), DATASERVER_CTRL_RETURN_INVAL_OP_TYPE);
+
         server_info_rw_locker.unlock();
-        log_warn("not found this server(%s) in serverInfoMap",
-                 tbsys::CNetUtil::addrToString(packet->server_id).c_str());
+        group_info_rw_locker.unlock();
+      }
+
+      stringstream ss;
+      ss<< "manipludate "<< TAIR_STR_SERVER_LIST<< " to group_conf file"<< endl;
+      string manipulate_str;
+      if (DATASERVER_CTRL_OP_ADD == req->op_cmd)
+        manipulate_str = "add dataserver";
+      else if (DATASERVER_CTRL_OP_DELETE == req->op_cmd)
+        manipulate_str = "delete dataserver";
+      else
+        manipulate_str = "inval op to dataserver";
+
+      if (UNLIKELY(values.size() != resp->return_code.size()))
+      {
+        // will never not come to here, just in case of crash
+        ss<< "value size is not equal to resp return code size"<< endl;
+        for (size_t i = 0; i < values.size(); ++i)
+          ss<< manipulate_str<< ' '<< values[i]<< endl;
+        log_error("%s", ss.str().c_str());
         return;
       }
-      server_info *p_server = it->second;
-      if(packet->cmd == request_data_server_ctrl::CTRL_DOWN
-         && p_server->status != server_info::DOWN) {
-        log_debug("force it down");
-        p_server->status = server_info::FORCE_DOWN;
+
+      for (size_t i = 0; i < values.size(); ++i)
+      {
+        ss<< manipulate_str<< ' '<< values[i]<< ' ';
+        switch(resp->return_code[i])
+        {
+          case DATASERVER_CTRL_RETURN_SUCCESS:
+            ss<< "success";
+            break;
+          case DATASERVER_CTRL_RETURN_FILE_OP_FAILED:
+            ss<< "fail, manipulate group conf file failed";
+            break;
+          case DATASERVER_CTRL_RETURN_GROUP_NOT_FOUND:
+            ss<< "fail, group not found";
+            break;
+          case DATASERVER_CTRL_RETURN_SERVER_NOT_FOUND:
+            ss<< "fail, dataserver not found";
+            break;
+          case DATASERVER_CTRL_RETURN_SERVER_EXIST:
+            ss<< "fail, datasever already exist";
+            break;
+          case DATASERVER_CTRL_RETURN_INVAL_OP_TYPE:
+            ss<< "fail, invalid manipulate type";
+            break;
+          case DATASERVER_CTRL_RETURN_NR:
+          default:
+            ss<< "fail, unkown";
+        }
+        ss<< endl;
       }
-      else if(packet->cmd == request_data_server_ctrl::CTRL_UP
-              && p_server->status != server_info::ALIVE) {
-        struct timespec tm;
-        clock_gettime(CLOCK_MONOTONIC, &tm);
-        p_server->last_time = tm.tv_sec;
-        p_server->status = server_info::ALIVE;
-        p_server->group_info_data->set_force_rebuild();
-        log_debug("force it up");
-      }
-      server_info_rw_locker.unlock();
+      log_warn("%s", ss.str().c_str());
     }
 
     void server_conf_thread::
@@ -710,6 +781,7 @@ namespace tair {
             snprintf(key, 32, "area(%u)", capacity_it->first);
             snprintf(value, 32, "%" PRI64_PREFIX "u", capacity_it->second);
             resp->map_k_v[key] = value;
+            group_info_found->set_bitmap_area(capacity_it->first);
           }
         }
 
@@ -738,7 +810,7 @@ namespace tair {
           }
         }
         break;
-      case request_query_info::Q_DATA_SEVER_INFO:
+      case request_query_info::Q_DATA_SERVER_INFO:
         {
           server_info_rw_locker.rdlock();
           node_info_set nodeInfo = group_info_found->get_node_info();
@@ -748,12 +820,15 @@ namespace tair {
             snprintf(key, 32, "%s",
                      tbsys::CNetUtil::addrToString((*node_it)->server->
                                                    server_id).c_str());
-            if((*node_it)->server->status == server_info::ALIVE) {
+            if (server_info::ALIVE == (*node_it)->server->status)
               sprintf(value, "%s", "alive");
-            }
-            else {
+            else if (server_info::STANDBY == (*node_it)->server->status)
+              sprintf(value, "%s", "standby");
+            else if (server_info::DOWN == (*node_it)->server->status)
               sprintf(value, "%s", "dead");
-            }
+            else
+              sprintf(value, "%s", "unkown");
+
             resp->map_k_v[key] = value;
           }
           server_info_rw_locker.unlock();
@@ -773,17 +848,56 @@ namespace tair {
       return;
 
     }
+
+    void server_conf_thread::do_get_group_non_down_dataserver_packet(request_get_group_not_down_dataserver* req,
+                                                                     response_get_group_non_down_dataserver* resp)
+    {
+      if(is_ready == false) {
+        log_error("server_conf_thread is not ready");
+        return;
+      }
+      group_info_map::iterator it;
+      group_info_rw_locker.rdlock();
+      it = group_info_map_data.find(req->group_name);
+      if(it == group_info_map_data.end())
+      {
+        group_info_rw_locker.unlock();
+        log_warn("group info not found, group_name : %s", req->group_name);
+        return;
+      }
+
+      group_info *group_info_found = it->second;
+      resp->config_version = group_info_found->get_client_version();
+      if (group_info_found->get_client_version() == req->config_version)
+      {
+        group_info_rw_locker.unlock();
+        return;
+      }
+
+      server_info_rw_locker.rdlock();
+      node_info_set node_set = group_info_found->get_node_info();
+      for (node_info_set::const_iterator it = node_set.begin(); it != node_set.end(); ++it)
+      {
+        if (server_info::ALIVE == (*it)->server->status || server_info::STANDBY == (*it)->server->status)
+          resp->non_down_server_ids.insert((*it)->server->server_id);
+      }
+      server_info_rw_locker.unlock();
+
+      group_info_rw_locker.unlock();
+    }
+
     void server_conf_thread::do_heartbeat_packet(request_heartbeat * req,
                                                  response_heartbeat * resp)
     {
       if(is_ready == false) {
+        log_error("server_conf_thread is not ready");
         return;
       }
       group_info_rw_locker.rdlock();
       server_info_rw_locker.rdlock();
 
       server_info_map::iterator it =
-        data_server_info_map.find(req->server_id);
+        data_server_info_map.find(req->get_server_id());
       if(it == data_server_info_map.end()) {
         server_info_rw_locker.unlock();
         group_info_rw_locker.unlock();
@@ -791,13 +905,14 @@ namespace tair {
       }
       server_info *p_server = it->second;
       p_server->last_time = heartbeat_curr_time;
+      bool is_server_ready = req->check_is_server_ready();
       if (p_server->status == server_info::DOWN)
       {
         if (p_server->group_info_data == NULL ||
             p_server->group_info_data->get_accept_strategy() == GROUP_DEFAULT_ACCEPT_STRATEGY) //default accept strategy
         {
           log_warn("dataserver: %s UP, accept strategy is default, set it to solitary(can not work)",
-              tbsys::CNetUtil::addrToString(req->server_id).c_str());
+              tbsys::CNetUtil::addrToString(req->get_server_id()).c_str());
           // this data server should not be in this group
           resp->client_version = resp->server_version = 1;
           // inc table version and force rebuild table for send server table to slave asynchronously
@@ -815,30 +930,44 @@ namespace tair {
         }
         else if (p_server->group_info_data->get_accept_strategy() == GROUP_AUTO_ACCEPT_STRATEGY)
         {
-          log_warn("dataserver: %s UP, accept strategy is auto, we will rebuild the table.",
-              tbsys::CNetUtil::addrToString(req->server_id).c_str());
-          // accept ds automatically
-          struct timespec tm;
-          clock_gettime(CLOCK_MONOTONIC, &tm);
-          p_server->last_time = tm.tv_sec;
-          p_server->status = server_info::ALIVE;
-          p_server->group_info_data->set_force_rebuild();
+          // hearbeat from former started server
+          // for the sake of consistency, wait it to clear old data first
+          // set the status to standy
+          set_server_standby(p_server);
         }
         else
         {
           log_error("dataserver: %s UP, accept strategy is: %d illegal.",
-              p_server->group_info_data->get_accept_strategy(), tbsys::CNetUtil::addrToString(req->server_id).c_str());
+              tbsys::CNetUtil::addrToString(req->get_server_id()).c_str(), p_server->group_info_data->get_accept_strategy());
           server_info_rw_locker.unlock();
           group_info_rw_locker.unlock();
           return;
         }
       }
-      else if (p_server->status == server_info::FORCE_DOWN)
+      else if (p_server->status == server_info::STANDBY)
       {
-        resp->client_version = resp->server_version = 1;
-        server_info_rw_locker.unlock();
-        group_info_rw_locker.unlock();
-        return;
+        if (is_server_ready && req->config_version >= p_server->standby_version)
+        {
+          // standby server has already received current table
+          struct timespec tm;
+          clock_gettime(CLOCK_MONOTONIC, &tm);
+          if (tm.tv_sec - p_server->standby_time >= TAIR_SERVER_STANDBYTIME)
+          {
+            // wait TAIR_SERVER_STANDBYTIME after standby server update current table
+            set_server_alive(p_server);
+          }
+        }
+      }
+      else if (false == is_server_ready && p_server->status == server_info::ALIVE)
+      {
+        p_server->status = server_info::STANDBY;
+        if (p_server->group_info_data != NULL)
+        {
+          p_server->group_info_data->set_force_rebuild();
+          // try to failover this down ds.
+          if(master_config_server_id == util::local_server_ip::ip)
+            p_server->group_info_data->pending_failover_server(p_server->server_id);
+        }
       }
 
       group_info *group_info_founded = p_server->group_info_data;
@@ -849,17 +978,14 @@ namespace tair {
       }
       if(group_info_founded->get_group_status() == false) {
         log_error("group:%s status is abnorm. set ds: %s to solitary(can not work)",
-            group_info_founded->get_group_name(), tbsys::CNetUtil::addrToString(req->server_id).c_str());
+            group_info_founded->get_group_name(), tbsys::CNetUtil::addrToString(req->get_server_id()).c_str());
         resp->client_version = resp->server_version = 1;
         server_info_rw_locker.unlock();
         group_info_rw_locker.unlock();
         return;
       }
-      resp->client_version = group_info_founded->get_client_version();
-      resp->down_slave_config_server = down_slave_config_server;
-      resp->data_need_move = group_info_founded->get_data_need_move();
-      tair_stat *stat = req->get_stat();
 
+      tair_stat *stat = req->get_stat();
       if(stat) {
         log_debug("have stat info");
         node_stat_info node_stat;
@@ -910,27 +1036,49 @@ namespace tair {
             node_stat.insert_stat_detail(i, statDetail);
           }
         }
-        group_info_founded->set_stat_info(req->server_id, node_stat);
+        group_info_founded->set_stat_info(req->get_server_id(), node_stat);
       }
 
       //TODO interval of next stat report
       //heartbeat_curr_time will be set as last update time
-      if(req->config_version != group_info_founded->get_server_version()) {
+      log_debug("@@ hb %d <> %d", req->config_version, group_info_founded->get_server_version());
+      resp->client_version = group_info_founded->get_client_version();
+      resp->server_version = group_info_founded->get_server_version();
+      resp->down_slave_config_server = down_slave_config_server;
+      resp->transition_info.reset(group_info_founded->get_transition_version(),
+                                  group_info_founded->get_data_need_move() != 0,
+                                  group_info_founded->is_failovering(),
+                                  group_info_founded->is_migrating());
+      resp->recovery_version = group_info_founded->get_recovery_version();
+
+      if(req->config_version != group_info_founded->get_server_version() || // server version change
+         (group_info_founded->is_transition_status() &&                     // transition version change
+          (req->transition_info.transition_version != group_info_founded->get_transition_version() ||
+            req->recovery_version != group_info_founded->get_recovery_version()))) { // recovery version changed
+
+        log_debug("local sv(%d), tv(%d), rv(%d)", group_info_founded->get_server_version(),
+                  group_info_founded->get_transition_version(), group_info_founded->get_recovery_version());
+        log_debug("remote sv(%d), tv(%d), rv(%d) of dataserver(%s)", req->config_version,
+                  req->transition_info.transition_version, req->recovery_version, tbsys::CNetUtil::addrToString(req->get_server_id()).c_str());
         // set the groupname into the packet
         int len = strlen(group_info_founded->get_group_name()) + 1;
         if(len > 64)
           len = 64;
         memcpy(resp->group_name, group_info_founded->get_group_name(), len);
         resp->group_name[63] = '\0';
-        resp->server_version = group_info_founded->get_server_version();
         resp->bucket_count = group_info_founded->get_server_bucket_count();
         resp->copy_count = group_info_founded->get_copy_count();
         resp->set_hash_table(group_info_founded->
                              get_hash_table_deflate_data(req->server_flag),
                              group_info_founded->
                              get_hash_table_deflate_size(req->server_flag));
-        log_info("config verion diff, return hash table size: %d",
+        log_info("version diff, return hash table size: %d",
                  resp->get_hash_table_size());
+        // only in case that transistion version changed, response with the recovery ds
+        if (group_info_founded->is_failovering() && req->transition_info.transition_version != group_info_founded->get_transition_version())
+        {
+          group_info_founded->get_recovery_ds(resp->recovery_ds);
+        }
       }
       else {
         if(master_config_server_id == util::local_server_ip::ip) {
@@ -955,7 +1103,7 @@ namespace tair {
         const uint64_t *p_s_table = group_info_founded->get_hash_table(0);
         for(uint32_t i = 0; i < group_info_founded->get_server_bucket_count();
             ++i) {
-          if(req->server_id == p_s_table[i]) {
+          if(req->get_server_id() == p_s_table[i]) {
             resp->migrated_info.push_back(i);
             for(uint32_t j = 0; j < group_info_founded->get_copy_count(); ++j) {
               resp->migrated_info.
@@ -999,7 +1147,7 @@ namespace tair {
         ret = 1;
       }
       uint64_t slave_server_id = get_slave_server_id();
-      group_info_rw_locker.rdlock();
+      group_info_rw_locker.wrlock();
       server_info_rw_locker.rdlock();
       server_info_map::iterator it =
         data_server_info_map.find(req->server_id);
@@ -1018,30 +1166,54 @@ namespace tair {
       return ret;
     }
 
+    int server_conf_thread::do_finish_recovery_packet(request_recovery_finish *req)
+    {
+      int ret = 0;
+      log_info("receive recovery finish packet from [%s], transition version is %d",
+               tbsys::CNetUtil::addrToString(req->server_id).c_str(), req->transition_version);
+      if(is_ready == false) {
+        return 1;
+      }
+      if(master_config_server_id != util::local_server_ip::ip) {
+        // this is a slve config server. no response
+        // just ignore finish request
+        return 1;
+      }
+      group_info_rw_locker.wrlock();
+      server_info_rw_locker.rdlock();
+      server_info_map::iterator it =
+        data_server_info_map.find(req->server_id);
+      if(it != data_server_info_map.end()
+         && it->second->group_info_data != NULL) {
+        if(it->second->group_info_data->
+          do_finish_recovery(req->server_id, req->version, req->transition_version, req->bucket_no) == false) {
+          if(ret == 0) {
+            ret = -1;
+          }
+        }
+      }
+      server_info_rw_locker.unlock();
+      group_info_rw_locker.unlock();
+      return ret;
+    }
+
     uint64_t server_conf_thread::get_master_config_server(uint64_t id,
                                                           int value)
     {
       uint64_t master_id = 0;
-      common::wait_object * cwo = my_wait_object_manager.create_wait_object();
-      request_set_master *packet = new request_set_master();
+      request_set_master *packet = (request_set_master*)packet_factory::create_packet(TAIR_REQ_SETMASTER_PACKET);
       packet->value = value;
-      if(connmgr->
-         sendPacket(id, packet, NULL,
-                    (void *) ((long) cwo->get_id())) == false) {
-        log_error("Send RequestSetMasterPacket to %s failure.",
-                  tbsys::CNetUtil::addrToString(id).c_str());
-        delete packet;
-      }
-      else {
-        cwo->wait_done(1, 1000);
-        base_packet *tpacket = cwo->get_packet();
-        if(tpacket != NULL && tpacket->getPCode() == TAIR_RESP_RETURN_PACKET) {
-          if(((response_return *) tpacket)->get_code() == 0) {
-            master_id = id;
-          }
+
+      base_packet *bp = NULL;
+      bp = (base_packet*)easy_helper::easy_sync_send(eio, id, packet, this, &handler);
+      if(bp != NULL && bp->getPCode() == TAIR_RESP_RETURN_PACKET) {
+        if (((response_return*)bp)->get_code() == TAIR_RETURN_SUCCESS) {
+          master_id = id;
         }
+        delete bp;
       }
-      my_wait_object_manager.destroy_wait_object(cwo);
+      log_info("get_master_config_server id is [%"PRI64_PREFIX"d], ip=%s",
+          master_id, tbsys::CNetUtil::addrToString(master_id).c_str());
       return master_id;
     }
 
@@ -1051,75 +1223,63 @@ namespace tair {
     {
       bool ret = false;
       uint32_t hashcode = 0;
-      common::wait_object * cwo = my_wait_object_manager.create_wait_object();
       request_get_server_table *packet = new request_get_server_table();
       packet->config_version = type;
       packet->set_group_name(group_name);
       log_info("begin syncserver table with [%s] for group [%s]",
-               tbsys::CNetUtil::addrToString(sync_config_server_id).c_str(),
-               group_name);
-      if(connmgr->
-         sendPacket(sync_config_server_id, packet, NULL,
-                    (void *) ((long) cwo->get_id())) == false) {
+          tbsys::CNetUtil::addrToString(sync_config_server_id).c_str(), group_name);
+      base_packet *bp = NULL;
+      bp = (base_packet*)easy_helper::easy_sync_send(eio, sync_config_server_id, packet, this, &handler);
+      if (bp == NULL) {
         log_error("Send RequestGetServerInfoPacket to %s failure.",
-                  tbsys::CNetUtil::addrToString(sync_config_server_id).
-                  c_str());
-        delete packet;
-      }
-      else {
-        cwo->wait_done(1, 1000);
-        base_packet *tpacket = cwo->get_packet();
-        if(tpacket != NULL
-           && tpacket->getPCode() == TAIR_RESP_GET_SVRTAB_PACKET) {
-          response_get_server_table *resp =
-            (response_get_server_table *) tpacket;
-          if(resp->type == 0) {
-            if(resp->size > 0) {        //write to file
-              char file_name[256];
-              const char *sz_data_dir =
-                TBSYS_CONFIG.getString(CONFSERVER_SECTION, TAIR_DATA_DIR,
-                                       TAIR_DEFAULT_DATA_DIR);
-              snprintf(file_name, 256, "%s/%s_server_table", sz_data_dir,
-                       group_name);
-              ret =
-                backup_and_write_file(file_name, resp->data, resp->size,
-                                      resp->modified_time);
-              if(ret) {
-                hashcode =
-                  util::string_util::mur_mur_hash(resp->data, resp->size);
-              }
+            tbsys::CNetUtil::addrToString(sync_config_server_id).
+            c_str());
+      } else if (bp != NULL && bp->getPCode() == TAIR_RESP_GET_SVRTAB_PACKET) {
+        response_get_server_table *resp = (response_get_server_table *) bp;
+        if(resp->type == 0) {
+          if(resp->size > 0) {        //write to file
+            char file_name[256];
+            const char *sz_data_dir =
+              TBSYS_CONFIG.getString(CONFSERVER_SECTION, TAIR_DATA_DIR,
+                  TAIR_DEFAULT_DATA_DIR);
+            snprintf(file_name, 256, "%s/%s_server_table", sz_data_dir,
+                group_name);
+            ret =
+              backup_and_write_file(file_name, resp->data, resp->size,
+                  resp->modified_time);
+            if(ret) {
+              hashcode =
+                util::string_util::mur_mur_hash(resp->data, resp->size);
             }
           }
-          else {
-            const char *file_name =
-              TBSYS_CONFIG.getString(CONFSERVER_SECTION, TAIR_GROUP_FILE,
-                                     NULL);
-            if(file_name != NULL) {
-              ret =
-                backup_and_write_file(file_name, resp->data, resp->size,
-                                      resp->modified_time);
-              if(ret) {
-                hashcode =
-                  util::string_util::mur_mur_hash(resp->data, resp->size);
-              }
+        } else {
+          const char *file_name =
+            TBSYS_CONFIG.getString(CONFSERVER_SECTION, TAIR_GROUP_FILE,
+                NULL);
+          if(file_name != NULL) {
+            ret =
+              backup_and_write_file(file_name, resp->data, resp->size,
+                  resp->modified_time);
+            if(ret) {
+              hashcode =
+                util::string_util::mur_mur_hash(resp->data, resp->size);
             }
           }
         }
+        delete resp;
       }
-      my_wait_object_manager.destroy_wait_object(cwo);
 
       if(type == GROUP_DATA) {
         log_info("%s, load server_table%s, hashcode: %u",
-                 group_name, (ret ? "ok" : "error"), hashcode);
-      }
-      else {
+            group_name, (ret ? "ok" : "error"), hashcode);
+      } else {
         log_info("load groupFile%s, hashcode: %u", (ret ? "ok" : "error"),
-                 hashcode);
+            hashcode);
       }
     }
 
     // do_set_master_packet
-    bool server_conf_thread::do_set_master_packet(request_set_master * req)
+    bool server_conf_thread::do_set_master_packet(request_set_master * req, uint64_t server_id)
     {
       uint64_t old_master_config_server_id = master_config_server_id;
       bool ret = true;
@@ -1133,10 +1293,6 @@ namespace tair {
       if(req->value == 1 && config_server_info_list.size() > 0U &&
          config_server_info_list[0]->server_id != util::local_server_ip::ip) {
         master_config_server_id = 0;
-      }
-      uint64_t server_id = 0;
-      if(req->get_connection() != NULL) {
-        server_id = req->get_connection()->getServerId();
       }
       server_info_map::iterator it = config_server_info_map.find(server_id);
       if(it != config_server_info_map.end()) {
@@ -1157,9 +1313,8 @@ namespace tair {
       return ret;
     }
 
-    void server_conf_thread::do_op_cmd(request_op_cmd *req) {
+    void server_conf_thread::do_op_cmd(request_op_cmd *req, response_op_cmd *resp) {
       int rc = TAIR_RETURN_SUCCESS;
-      response_op_cmd *resp = new response_op_cmd();
       // only master can op cmd
       if(master_config_server_id != util::local_server_ip::ip) {
         rc = TAIR_RETURN_FAILED;
@@ -1182,9 +1337,54 @@ namespace tair {
           rc = set_group_status(resp, req->params, group_file_name);
           break;
         }
+        case TAIR_SERVER_CMD_GET_AREA_STATUS:
+        {
+          rc = get_group_config_value_list(resp, req->params, group_file_name, TAIR_AREA_STATUS, "off");
+          break;
+        }
+        case TAIR_SERVER_CMD_SET_AREA_STATUS:
+        {
+          rc = set_area_status(resp, req->params, group_file_name);
+          break;
+        }
         case TAIR_SERVER_CMD_RESET_DS:
         {
           rc = do_reset_ds_packet(resp, req->params);
+          break;
+        }
+        case TAIR_SERVER_CMD_ALLOC_AREA:
+        {
+          rc = do_allocate_area(resp, req->params, group_file_name);
+          break;
+        }
+        case TAIR_SERVER_CMD_SET_QUOTA:
+        {
+          rc = do_set_quota(resp, req->params, group_file_name);
+          break;
+        }
+        case TAIR_SERVER_CMD_MIGRATE_BUCKET:
+        {
+          rc = do_force_migrate_bucket(resp, req->params);
+          break;
+        }
+        case TAIR_SERVER_CMD_SWITCH_BUCKET:
+        {
+          rc = do_force_switch_bucket(resp, req->params);
+          break;
+        }
+        case TAIR_SERVER_CMD_ACTIVE_FAILOVER_OR_RECOVER:
+        {
+          rc = do_active_failover_or_recover(resp, req->params);
+          break;
+        }
+        case TAIR_SERVER_CMD_REPLACE_DS:
+        {
+          rc = do_force_replace_ds(resp, req->params);
+          break;
+        }
+        case TAIR_SERVER_CMD_URGENT_OFFLINE:
+        {
+          rc = do_urgent_offline(resp, req->params);
           break;
         }
         default:
@@ -1197,9 +1397,19 @@ namespace tair {
       }
       resp->code = rc;
       resp->setChannelId(req->getChannelId());
-      if (req->get_connection()->postPacket(resp) == false) {
-        delete resp;
+    }
+
+    int server_conf_thread::load_conf(const char *group_file_name, tbsys::CConfig &config)
+    {
+      if (group_file_name == NULL) {
+        log_error("group_file_name is NULL");
+        return TAIR_RETURN_FAILED;
       }
+      if (config.load((char*) group_file_name) == EXIT_FAILURE) {
+        log_error("load group file %s failed", group_file_name);
+        return TAIR_RETURN_FAILED;
+      }
+      return TAIR_RETURN_SUCCESS;
     }
 
     int server_conf_thread::get_group_config_value(response_op_cmd *resp,
@@ -1214,7 +1424,7 @@ namespace tair {
         return TAIR_RETURN_FAILED;
       }
       tbsys::CConfig config;
-      if (config.load((char*) group_file_name) == EXIT_FAILURE) {
+      if (TAIR_RETURN_SUCCESS != load_conf(group_file_name, config)){
         log_error("load group file %s failed", group_file_name);
         return TAIR_RETURN_FAILED;
       }
@@ -1232,6 +1442,105 @@ namespace tair {
       return TAIR_RETURN_SUCCESS;
     }
 
+    int server_conf_thread::get_group_config_value_list(response_op_cmd *resp,
+                                                   const vector<string> &params, const char *group_file_name,
+                                                   const char *config_key, const char* default_value) {
+      if (config_key == NULL) {
+        log_error("get config value but key is NULL");
+        return TAIR_RETURN_FAILED;
+      }
+      tbsys::CConfig config;
+      if (config.load((char*) group_file_name) == EXIT_FAILURE) {
+        log_error("load group file %s failed", group_file_name);
+        return TAIR_RETURN_FAILED;
+      }
+
+      for (size_t i = 0; i < params.size(); ++i) {
+        vector<const char *> config_values = config.getStringList(params[i].c_str(), config_key);
+        if (config_values.size() != 0) {
+          char buf[128];
+          for (vector<const char *>::iterator it = config_values.begin(); it != config_values.end(); it++) {
+            log_warn("%s: %s=%s", params[i].c_str(), config_key, *it);
+            snprintf(buf, sizeof(buf), "%s: %s=%s", params[i].c_str(), config_key, *it);
+            resp->infos.push_back(string(buf));
+          }
+        }
+      }
+      return TAIR_RETURN_SUCCESS;
+    }
+
+    int server_conf_thread::set_area_quota(const char *area_key, const char *quota, const char *group_name, const char *group_file_name, bool new_area, uint32_t *new_area_num)
+    {
+      int rc = TAIR_RETURN_FAILED;
+      group_info_map::iterator mit;
+      tbsys::CThreadGuard guard(&group_file_mutex);
+      group_info_rw_locker.wrlock();
+      mit = group_info_map_data.find(group_name);
+      if (mit == group_info_map_data.end()) {
+        log_error("group not found");
+        return TAIR_RETURN_OP_GROUP_NOT_FOUND;
+      }
+      else {
+        uint32_t area_num;
+        if (new_area) {
+          int ret = mit->second->get_area_num(area_key, area_num);
+          if (TAIR_RETURN_SUCCESS != ret)
+            return ret;
+          rc = mit->second->add_area_capacity_list(group_file_name, group_name, area_key, area_num, quota);
+          if (TAIR_RETURN_SUCCESS == rc){
+            rc = mit->second->add_area_key_list(group_file_name, group_name, area_key, area_num);
+            *new_area_num = area_num;
+          } else if (TAIR_RETURN_AREA_NOT_EXISTED == rc){
+            rc = TAIR_RETURN_SUCCESS;
+          }
+        }
+        else {
+          int ret = mit->second->get_area_num(area_key, area_num);
+          if (TAIR_RETURN_SUCCESS != ret)
+            return TAIR_RETURN_AREA_NOT_EXISTED;
+          rc = mit->second->update_area_capacity_list(group_file_name, group_name, area_num, quota);
+        }
+      }
+      group_info_rw_locker.unlock();
+
+      return rc;
+    }
+
+    int server_conf_thread::do_allocate_area(response_op_cmd *resp,
+        const vector<string> &params, const char *group_file_name)
+    {
+      if (group_file_name == NULL) {
+        log_error("group_file_name is NULL");
+        return TAIR_RETURN_OP_GROUP_NOT_FOUND;
+      }
+      if (params.size() != 3) {
+        log_error("set quota but have no area/capacity_ size:%zd", params.size());
+        return TAIR_RETURN_OP_INVALID_PARAM;
+      }
+      log_warn("set area quota: groupname:%s = area:%s, quota:%s", params[2].c_str(), params[0].c_str(), params[1].c_str());
+      uint32_t area;
+      int rc = set_area_quota(params[0].c_str(), params[1].c_str(), params[2].c_str(), group_file_name, true, &area);
+      char buf[64];
+      snprintf(buf, sizeof(buf), "%u", area);
+      resp->infos.push_back(buf);
+      return rc;
+    }
+
+    int server_conf_thread::do_set_quota(response_op_cmd *resp,
+        const vector<string> &params, const char *group_file_name)
+    {
+      if (group_file_name == NULL) {
+        log_error("group_file_name is NULL");
+        return TAIR_RETURN_OP_GROUP_NOT_FOUND;
+      }
+      if (params.size() != 3) {
+        log_error("set quota but have no area/capacity_");
+        return TAIR_RETURN_OP_INVALID_PARAM;
+      }
+      log_warn("set area quota: groupname:%s = area:%s, quota:%s", params[2].c_str(), params[0].c_str(), params[1].c_str());
+      return set_area_quota(params[0].c_str(), params[1].c_str(), params[2].c_str(), group_file_name, false, NULL);
+    }
+
     int server_conf_thread::set_group_status(response_op_cmd *resp,
         const vector<string> &params, const char *group_file_name) {
       if (group_file_name == NULL) {
@@ -1247,10 +1556,28 @@ namespace tair {
       return util::file_util::change_conf(group_file_name, params[0].c_str(), TAIR_GROUP_STATUS, params[1].c_str());
     }
 
+    int server_conf_thread::set_area_status(response_op_cmd *resp,
+        const vector<string> &params, const char *group_file_name) {
+      char key[128];
+      if (group_file_name == NULL) {
+        log_error("group_file_name is NULL");
+        return TAIR_RETURN_FAILED;
+      }
+      if (params.size() != 3) {
+        log_error("set group status but have no group/status");
+        return TAIR_RETURN_FAILED;
+      }
+      snprintf(key, sizeof(key), TAIR_AREA_STATUS "=%s", params[1].c_str());
+
+      log_warn("set group : %s, area:%s, status:%s", params[0].c_str(), params[1].c_str(), params[2].c_str());
+      //return util::file_util::change_conf(group_file_name, params[0].c_str(), TAIR_GROUP_STATUS, params[1].c_str());
+      return util::file_util::change_conf(group_file_name, params[0].c_str(), key, params[2].c_str(), util::file_util::CHANGE_FILE_MODIFY, ',');
+    }
+
     int server_conf_thread::do_reset_ds_packet(response_op_cmd* resp, const vector<string>& params)
     {
       int ret = TAIR_RETURN_SUCCESS;
-      if (params.size() <= 0)
+      if (params.size() <= 1)
       {
         log_error("reset ds cmd but no group parameter");
         return TAIR_RETURN_FAILED;
@@ -1266,8 +1593,8 @@ namespace tair {
 
       vector<uint64_t> ds_ids;
       vector<string>::const_iterator it = params.begin();
-      ++it;
-      log_info("resetds group: %s, requeset resetds size: %d", cmd_group, params.size() - 1);
+      ++it; ++it;
+      log_info("resetds group: %s, requeset resetds size: %lu", cmd_group, params.size() - 1);
       for (; it != params.end(); it++)
       {
         log_info("reset ds: %s", it->c_str());
@@ -1296,6 +1623,265 @@ namespace tair {
       mit->second->inc_version();
       mit->second->set_force_send_table();
       group_info_rw_locker.unlock();
+      return ret;
+    }
+
+    int server_conf_thread::do_force_migrate_bucket(response_op_cmd* resp, const vector<string>& params)
+    {
+      //params
+      //group_name bucket_no copy_no src_ds_addr dest_ds_addr
+      int ret = TAIR_RETURN_SUCCESS;
+      if (params.size() != 5)
+      {
+        log_error("force migrate bucket cmd, but parameter is illegal");
+        ret = TAIR_RETURN_FAILED;
+      }
+
+      if (ret == TAIR_RETURN_SUCCESS)
+      {
+        const char* cmd_group = params[0].c_str();
+        group_info_map::iterator mit = group_info_map_data.find(cmd_group);
+        if (mit == group_info_map_data.end())
+        {
+          log_error("force migrate bucket cmd, group name: %s", cmd_group);
+          ret = TAIR_RETURN_FAILED;
+        }
+        else
+        {
+          int bucket_no = atoi(params[1].c_str());
+          int copy_no = atoi(params[2].c_str());
+          uint64_t src_ds_addr = tbsys::CNetUtil::strToAddr(params[3].c_str(), 0);
+          uint64_t dest_ds_addr = tbsys::CNetUtil::strToAddr(params[4].c_str(), 0);
+
+          ret = mit->second->force_migrate_bucket(bucket_no, copy_no, src_ds_addr, dest_ds_addr,
+                                         &group_info_rw_locker, &server_info_rw_locker);
+        }
+      }
+      return ret;
+    }
+
+    int server_conf_thread::do_force_switch_bucket(response_op_cmd* resp, const vector<string>& params)
+    {
+      //params
+      //group_name bucket_nos
+      int ret = TAIR_RETURN_SUCCESS;
+      if (params.size() != 2)
+      {
+        log_error("force switch bucket cmd, but parameter is illegal");
+        ret = TAIR_RETURN_FAILED;
+      }
+
+      if (ret == TAIR_RETURN_SUCCESS)
+      {
+        const char* cmd_group = params[0].c_str();
+        group_info_map::iterator mit = group_info_map_data.find(cmd_group);
+        if (mit == group_info_map_data.end())
+        {
+          log_error("force switch bucket cmd, group name: %s", cmd_group);
+          ret = TAIR_RETURN_FAILED;
+        }
+        else
+        {
+          // init buckets
+          set<uint32_t> bucket_nos;
+          std::vector<std::string> bucket_strs;
+          tair::util::string_util::split_str(params[1].c_str(), ", ", bucket_strs);
+
+          for (size_t i = 0; i < bucket_strs.size(); ++i)
+          {
+            errno = 0;
+            char *endptr = NULL;
+            uint32_t bucket_no = strtol(bucket_strs[i].c_str(), &endptr, 10);
+            if (0 == errno && endptr != bucket_strs[i].c_str()) {
+              bucket_nos.insert(bucket_no);
+            } else {
+              log_error("invalid bucket_no : %s", bucket_strs[i].c_str());
+              ret = TAIR_RETURN_FAILED;
+              break;
+            }
+          }
+
+          if (TAIR_RETURN_SUCCESS == ret) {
+            ret = mit->second->force_switch_bucket(bucket_nos,
+                                           &group_info_rw_locker, &server_info_rw_locker);
+          }
+        }
+      }
+      return ret;
+    }
+
+    int server_conf_thread::do_active_failover_or_recover(response_op_cmd *resp, const std::vector<std::string>& params)
+    {
+      // params : group_name server_id type
+      int ret = TAIR_RETURN_SUCCESS;
+      if (params.size() != 3)
+      {
+        log_error("active_failover_or_recover cmd, but parameter is illegal");
+        ret = TAIR_RETURN_FAILED;
+      }
+
+      if (ret == TAIR_RETURN_SUCCESS)
+      {
+        const char* cmd_group = params[0].c_str();
+        group_info_map::iterator mit = group_info_map_data.find(cmd_group);
+        if (mit == group_info_map_data.end())
+        {
+          log_error("active_failover_or_recover cmd, group name: %s not found", cmd_group);
+          ret = TAIR_RETURN_FAILED;
+        }
+        else
+        {
+          uint64_t server_id = tbsys::CNetUtil::strToAddr(params[1].c_str(), TAIR_SERVER_DEFAULT_PORT);
+          int type = atoi(params[2].c_str());
+
+          log_info("active_failover_or_recover cmd, group_name(%s), ds(%s), type(%d)",
+                     cmd_group, tbsys::CNetUtil::addrToString(server_id).c_str(), type);
+
+          switch (type) {
+            case ACTIVE_FAILOVER:
+            {
+              log_error("recv active_failover req, try to failover %s", tbsys::CNetUtil::addrToString(server_id).c_str());
+              ret = mit->second->active_failover_ds(server_id, &group_info_rw_locker, &server_info_rw_locker);
+            }
+            break;
+            case ACTIVE_RECOVER:
+            {
+              log_error("recv active_recover req, try to recover %s", tbsys::CNetUtil::addrToString(server_id).c_str());
+              ret = mit->second->active_recover_ds(server_id, &group_info_rw_locker, &server_info_rw_locker);
+            }
+            break;
+            default:
+            {
+              log_error("active_failover_or_recover, unknown type: %d", type);
+              ret = TAIR_RETURN_FAILED;
+            }
+            break;
+          }
+        }
+      }
+      return ret;
+    }
+
+    int server_conf_thread::do_force_replace_ds(response_op_cmd *resp, const std::vector<std::string>& params)
+    {
+      // params : group_name repalce_ds_cnt src_ds dest_ds
+      int ret = TAIR_RETURN_SUCCESS;
+      if (params.size() != 4)
+      {
+        log_error("force_replace_ds cmd, but parameter is illegal");
+        ret = TAIR_RETURN_FAILED;
+      }
+
+      if (ret == TAIR_RETURN_SUCCESS)
+      {
+        const char* cmd_group = params[0].c_str();
+        group_info_map::iterator mit = group_info_map_data.find(cmd_group);
+        if (mit == group_info_map_data.end())
+        {
+          log_error("force_replace_ds cmd, group name: %s not found", cmd_group);
+          ret = TAIR_RETURN_FAILED;
+        }
+        else
+        {
+          std::map<uint64_t, uint64_t> replace_ds_pairs;
+          if (check_replace_ds_params(replace_ds_pairs, params))
+          {
+            ret = mit->second->force_replace_ds(replace_ds_pairs, &group_info_rw_locker, &server_info_rw_locker);
+          }
+          else
+          {
+            log_error("force_replace_ds cmd, but parameter is illegal");
+            ret = TAIR_RETURN_FAILED;
+          }
+        }
+      }
+      return ret;
+    }
+
+    bool server_conf_thread::check_replace_ds_params(std::map<uint64_t, uint64_t>& replace_ds_pairs, const std::vector<std::string>& params)
+    {
+      uint32_t ds_cnt = atoi(params[1].c_str());
+
+      std::vector<std::string> src_ds_strs;
+      tair::util::string_util::split_str(params[2].c_str(), ",", src_ds_strs);
+      std::vector<std::string> dst_ds_strs;
+      tair::util::string_util::split_str(params[3].c_str(), ",", dst_ds_strs);
+
+      bool valid = ds_cnt == src_ds_strs.size() && ds_cnt == dst_ds_strs.size();
+      if (valid)
+      {
+        std::set<uint64_t> ds_set;
+        for (uint32_t i = 0; i < src_ds_strs.size(); i++)
+        {
+          uint64_t src_server_id = tbsys::CNetUtil::strToAddr(src_ds_strs[i].c_str(), TAIR_SERVER_DEFAULT_PORT);
+          uint64_t dst_server_id = tbsys::CNetUtil::strToAddr(dst_ds_strs[i].c_str(), TAIR_SERVER_DEFAULT_PORT);
+
+          if (ds_set.insert(src_server_id).second && ds_set.insert(dst_server_id).second)
+          {
+            replace_ds_pairs.insert(std::pair<uint64_t, uint64_t>(src_server_id, dst_server_id));
+          }
+          else
+          {
+            ds_set.clear();
+            replace_ds_pairs.clear();
+            valid = false;
+            break;
+          }
+        }
+      }
+
+      return valid;
+    }
+
+    int server_conf_thread::do_urgent_offline(response_op_cmd *resp, const std::vector<std::string>& params)
+    {
+      // params : urgent_offline group src_ds dst_ds
+      int ret = TAIR_RETURN_SUCCESS;
+      if (params.size() != 3)
+      {
+        log_error("urgent_offline cmd, but parameter is illegal");
+        ret = TAIR_RETURN_FAILED;
+      }
+
+      if (ret == TAIR_RETURN_SUCCESS)
+      {
+        const char* cmd_group = params[0].c_str();
+        group_info_map::iterator mit = group_info_map_data.find(cmd_group);
+        if (mit == group_info_map_data.end())
+        {
+          log_error("urgent_offline cmd, group name: %s not found", cmd_group);
+          ret = TAIR_RETURN_FAILED;
+        }
+        else
+        {
+          uint64_t offline_id = tbsys::CNetUtil::strToAddr(params[1].c_str(), 0);
+          set<uint64_t> replace_ids;
+
+          std::vector<std::string> replace_id_strs;
+          tair::util::string_util::split_str(params[2].c_str(), ", ", replace_id_strs);
+
+          for (size_t i = 0; i < replace_id_strs.size(); ++i)
+          {
+            uint64_t replace_id = tbsys::CNetUtil::strToAddr(replace_id_strs[i].c_str(), 0);
+            if (0 == replace_id || !replace_ids.insert(replace_id).second) {
+              ret = TAIR_RETURN_FAILED;
+              break;
+            }
+          }
+
+          if (0 == offline_id || replace_ids.find(offline_id) != replace_ids.end()) {
+              ret = TAIR_RETURN_FAILED;
+          }
+
+          if (TAIR_RETURN_SUCCESS == ret) {
+            ret = mit->second->urgent_offline(offline_id, replace_ids,
+                                    &group_info_rw_locker, &server_info_rw_locker);
+          } else {
+            replace_ids.clear();
+            log_error("urgent_offline cmd, but parameter is illegal");
+          }
+        }
+      }
       return ret;
     }
 
@@ -1341,7 +1927,7 @@ namespace tair {
                tbsys::CNetUtil::addrToString(slave_server_id).c_str(),
                util::string_util::mur_mur_hash(packet->data, packet->size));
 
-      if(connmgr->sendPacket(slave_server_id, packet, this, NULL) == false) {
+      if(easy_helper::easy_async_send(eio, slave_server_id, packet, this, &handler) == EASY_ERROR) {
         log_error("Send ResponseGetServerTablePacket %s failure.",
                   tbsys::CNetUtil::addrToString(slave_server_id).c_str());
         delete packet;
@@ -1390,22 +1976,21 @@ namespace tair {
       // if config server is not default master and now is master role, accept this packet.
       if (master_config_server_id == util::local_server_ip::ip)
       {
-        string peer_ip = tbsys::CNetUtil::addrToString(packet->get_connection()->getPeerId()).c_str();
+        string peer_ip = tbsys::CNetUtil::addrToString(packet->peer_id);
         size_t peer_pos = peer_ip.find(":");
-        string default_m_ip = tbsys::CNetUtil::addrToString(config_server_info_list[0]->server_id).c_str();
+        string default_m_ip = tbsys::CNetUtil::addrToString(config_server_info_list[0]->server_id);
         size_t default_m_pos = default_m_ip.find(":");
-        log_warn("master conflict. local id: %s, peer id: %s, pos: %u, ip: %s, default id: %s, pos: %u, ip: %s",
+        log_warn("master conflict. local id: %s, peer id: %s, pos: %lu, ip: %s, default id: %s, pos: %lu, ip: %s",
             tbsys::CNetUtil::addrToString(util::local_server_ip::ip).c_str(),
             peer_ip.c_str(), peer_pos, peer_ip.substr(0, peer_pos).c_str(),
             default_m_ip.c_str(), default_m_pos, default_m_ip.substr(0, default_m_pos).c_str());
         if (peer_ip.substr(0, peer_pos) != default_m_ip.substr(0, default_m_pos))
         {
-          log_error("master conflict, master ip: %s, local ip: %s, default ip: %s, peer ip: %s,"
+          log_error("master conflict, master ip: %s, local ip: %s, default ip: %s, "
               " this packet is not from default master, discard set server table packet",
               tbsys::CNetUtil::addrToString(master_config_server_id).c_str(),
               tbsys::CNetUtil::addrToString(util::local_server_ip::ip).c_str(),
-              tbsys::CNetUtil::addrToString(config_server_info_list[0]->server_id).c_str(),
-              tbsys::CNetUtil::addrToString(packet->get_connection()->getPeerId()).c_str());
+              tbsys::CNetUtil::addrToString(config_server_info_list[0]->server_id).c_str());
           return false;
         }
       }
@@ -1554,6 +2139,32 @@ namespace tair {
                        &(p_server_conf->server_info_rw_locker));
       }
     }
-
+    void server_conf_thread::set_server_standby(server_info* p_server)
+    {
+      log_warn("dataserver(%s) change status: DOWN => STANDBY",
+          tbsys::CNetUtil::addrToString(p_server->server_id).c_str());
+      struct timespec tm;
+      clock_gettime(CLOCK_MONOTONIC, &tm);
+      p_server->status = server_info::STANDBY;
+      p_server->standby_version = p_server->group_info_data->get_server_version();
+      p_server->standby_time = tm.tv_sec;
+    }
+    void server_conf_thread::set_server_alive(server_info* p_server)
+    {
+      log_warn("dataserver(%s) change status: %s => ALIVE",
+          tbsys::CNetUtil::addrToString(p_server->server_id).c_str(), server_info::DOWN == p_server->status ? "DOWN" : "STANDBY");
+      log_warn("dataserver: %s UP, accept strategy is auto, we will rebuild the table.",
+          tbsys::CNetUtil::addrToString(p_server->server_id).c_str());
+      // accept ds automatically
+      struct timespec tm;
+      clock_gettime(CLOCK_MONOTONIC, &tm);
+      p_server->last_time = tm.tv_sec;
+      p_server->status = server_info::ALIVE;
+      // pending recover this server
+      if(master_config_server_id == util::local_server_ip::ip) {
+        p_server->group_info_data->pending_recover_server(p_server->server_id);
+      }
+      p_server->group_info_data->set_force_rebuild();
+    }
   }
 }

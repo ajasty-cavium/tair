@@ -7,7 +7,7 @@
  *
  * conf_server_table_monitor.cpp is a tool to peek the hashtable config server builded
  *
- * Version: $Id$
+ * Version: $Id: conf_server_table_monitor.cpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>

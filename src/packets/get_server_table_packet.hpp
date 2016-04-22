@@ -5,9 +5,9 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  *
- * get server table for a particular group 
+ * get server table for a particular group
  *
- * Version: $Id$
+ * Version: $Id: get_server_table_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -30,7 +30,12 @@ namespace tair {
       {
          setPCode(TAIR_REQ_GET_SVRTAB_PACKET);
       }
+
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_SPECIAL;
+      }
    };
+
    class response_get_server_table : public base_packet {
    public:
       response_get_server_table()
@@ -48,7 +53,11 @@ namespace tair {
          if (data) ::free(data);
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+         return base_packet::RESP_COMMON;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(modified_time);
          output->writeInt32(type);
@@ -80,7 +89,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 20) {
             log_warn( "buffer data too few.");

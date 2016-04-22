@@ -7,7 +7,7 @@
  *
  * update log is for record updates while migrating
  *
- * Version: $Id$
+ * Version: $Id: update_log.hpp 1961 2013-11-20 09:57:21Z dutor $
  *
  * Authors:
  *   fanggang <fanggang@taobao.com>
@@ -121,6 +121,7 @@ namespace tair {
       lsn_type get_flsn();
       lsn_type get_hlsn();
       void set_hlsn(lsn_type lsn);
+      update_log* reset();
    private:
       update_log(bool is_migrating);
       ~update_log();
@@ -195,6 +196,7 @@ namespace tair {
       void truncate(uint32_t size);
       log_file(const char *file_name);
       void read_control_page();
+      inline char* get_name() { return file->get_file_name(); }
    private:
 
       ~log_file();

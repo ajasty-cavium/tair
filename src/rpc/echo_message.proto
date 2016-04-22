@@ -1,0 +1,10 @@
+package tair.packet;
+
+option java_package = "com.taobao.tair.package.pb";
+option java_outer_classname = "EchoMessageBuilder";
+
+message EchoMessage 
+{
+  required string mesg = 1;
+}
+

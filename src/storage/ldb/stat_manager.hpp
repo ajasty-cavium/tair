@@ -38,7 +38,7 @@ namespace tair {
         stat_manager();
         virtual ~stat_manager();
 
-        bool start(int bucket_number, const char *file_dir);
+        bool start(const char *file_dir);
         void stop();
         void destroy();
 

@@ -29,6 +29,7 @@ namespace tair {
       }
 
       request_expire(request_expire &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_EXPIRE_PACKET);
          server_flag = packet.server_flag;
@@ -37,21 +38,25 @@ namespace tair {
          key.clone(packet.key);
       }
 
-      size_t size()
-      {
-        return 1 + 2 + 4 + key.encoded_size() + 16;
-      }
-
-      virtual uint16_t ns()
-      {
-        return area;
-      }
-
       ~request_expire()
       {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual size_t size() const
+      {
+        return 1 + 2 + 4 + key.encoded_size() + 16; //simple, so no need to read getDataLen()
+      }
+
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_WRITE;
+      }
+
+      uint16_t ns() const
+      {
+        return area;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt8(server_flag);
          output->writeInt16(area);
@@ -60,17 +65,36 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
-         if (header->_dataLen < 15) {
-            log_warn( "buffer data too few.");
-            return false;
+         //  int8   server_flag   1B     (must)
+         //  int16  area          2B     (must)
+         //  int32  expire        4B     (must)
+         //  ------------------------
+         //  total                7B
+         if (input->readInt8((uint8_t*)&server_flag) == false ||
+             input->readInt16((uint16_t*)&area) == false ||
+             input->readInt32((uint32_t*)&expired) == false) {
+           log_warn("buffer data too few, buffer length %d", header->_dataLen);
+           return false;
          }
-         server_flag = input->readInt8();
-         area = input->readInt16();
-         expired = input->readInt32();
 
-         key.decode(input);
+
+#if TAIR_MAX_AREA_COUNT < 65536
+         if (area >= TAIR_MAX_AREA_COUNT) {
+           log_warn("area overflow: "
+                    "server_flag %x, area %d, expired %d",
+                    server_flag, area, expired);
+           return false;
+         }
+#endif
+
+         if (!key.decode(input)) {
+           log_warn("key decode failed: "
+                    "server_flag %x, area %d, expired %d",
+                    server_flag, area, expired);
+           return false;
+         }
 
          return true;
       }

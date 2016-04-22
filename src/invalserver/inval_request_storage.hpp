@@ -1,5 +1,19 @@
-#ifndef INVAL_REQUEST_STORAGE_H
-#define INVAL_REQUEST_STORAGE_H
+/*
+ * (C) 2007-2012 Alibaba Group Holding Limited
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ *
+ * Version: $Id: inval_request_storage.hpp 28 2012-08-17 05:18:09Z fengmao.pj@taobao.com $
+ *
+ * Authors:
+ *   fengmao <fengmao.pj@taobao.com>
+ *
+ */
+#ifndef InvalRequestStorage_H
+#define InvalRequestStorage_H
 
 #include <tbsys.h>
 #include <tbnet.h>
@@ -7,15 +21,14 @@
 #include "define.hpp"
 #include "log.hpp"
 #include "base_packet.hpp"
-#include <fstream>
 #include <string>
 #include "packet_factory.hpp"
 namespace tair {
-  class inval_request_storage : public tbsys::CDefaultRunnable {
+  class InvalRequestStorage : public tbsys::CDefaultRunnable {
   public:
-    inval_request_storage();
+    InvalRequestStorage();
 
-    ~inval_request_storage();
+    ~InvalRequestStorage();
   public:
     void setThreadParameter(const std::string& data_path, const std::string& queue_name,
         const float read_disk_threshold, const float write_disk_threshold, const int max_cached_packet_count,
@@ -47,6 +60,7 @@ namespace tair {
     int write_request(base_packet* packet);
 
     int read_request(std::vector<base_packet*>& packet_vector, const int read_count);
+    std::string get_info();
   private:
     int read_packet_from_disk();
 
@@ -66,6 +80,7 @@ namespace tair {
     int max_cached_packet_count;
     static const uint32_t DATA_BUFFER_SIZE = 8192;//8k
     static const uint32_t DATA_PACKET_MIN_SIZE = 7;
+    //the thread that writes/reads packet to/from the disk, should not hold the lock for a long time.
 
     //if queue's size > write_disk_threshold * max_cached_packet_count, write data to the file.
     float write_disk_threshold;

@@ -1,4 +1,5 @@
 AM_LDFLAGS=-lpthread ${GCOV_LIB}
+AM_CXXFLAGS=-Werror
 
 noinst_LIBRARIES=libkyotocabinet.a
 

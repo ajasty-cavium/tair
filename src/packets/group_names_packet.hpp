@@ -7,7 +7,7 @@
  *
  * this packet is for query group names from configserver
  *
- * Version: $Id$
+ * Version: $Id: group_names_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -26,10 +26,13 @@ namespace tair {
          setPCode(TAIR_REQ_GROUP_NAMES_PACKET);
       }
 
-
       request_group_names(request_group_names &packet) : request_ping(packet)
       {
          setPCode(TAIR_REQ_GROUP_NAMES_PACKET);
+      }
+
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_READ;
       }
    };
    class response_group_names : public base_packet {
@@ -40,11 +43,16 @@ namespace tair {
          status = 0;
          setPCode(TAIR_RESP_GROUP_NAMES_PACKET);
       }
-      ~response_group_names() 
+
+      ~response_group_names()
       {
       }
 
-      bool encode(tbnet::DataBuffer *output) 
+      virtual base_packet::Type get_type() {
+         return base_packet::RESP_COMMON;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(status);
          output->writeInt32(group_name_list.size());
@@ -54,7 +62,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 8) {
             log_warn( "buffer data too few.");

@@ -7,7 +7,7 @@
  *
  * this packet is for configserver sync server table between each other
  *
- * Version: $Id$
+ * Version: $Id: server_hash_table_packet.hpp 1254 2012-11-29 03:15:47Z ganyu.hfl@taobao.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -38,7 +38,7 @@ namespace tair{
          }
       }
 
-      int get_hash_table_size() const 
+      int get_hash_table_size() const
       {
          return hash_table_size;
       }
@@ -71,13 +71,13 @@ namespace tair{
          unsigned long src_len = hash_table_size;
          server_list = (uint64_t*)malloc(dest_len);
          memset(server_list, 0, dest_len);
-         log_info("uncompress server list, data size: %d", src_len);
+         log_info("uncompress server list, data size: %lu", src_len);
          if (uncompress((Bytef*)server_list, &dest_len, (const Bytef*)hash_table_data, src_len) != Z_OK) {
             log_warn("uncompress error");
             ::free(server_list);
             server_list = NULL;
          } else {
-            log_debug("uncompress successed dest_len=%d",dest_len);
+            log_debug("uncompress successed dest_len=%lu",dest_len);
             server_list_count = (dest_len / sizeof(uint64_t));
          }
          return server_list;

@@ -940,6 +940,9 @@ public:
     if (!dump_meta()) err = true;
     if (!set_flag(FOPEN, true)) err = true;
     trigger_meta(MetaTrigger::CLEAR, "clear");
+	if (err) {
+		return false;
+	}
     return true;
   }
   /**
@@ -1856,7 +1859,7 @@ private:
       rec.kbuf = kbuf;
       rec.vbuf = vbuf;
       bool over = false;
-      FreeBlock fb;
+      FreeBlock fb = {0, 0};
       if (fetch_free_block(rec.rsiz, &fb)) {
         rec.off = fb.off;
         rec.rsiz = fb.rsiz;

@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: fdb_item_manager.hpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>

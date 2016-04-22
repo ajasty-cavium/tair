@@ -1,0 +1,28 @@
+[public]
+log_file = logs/stat_collector.log
+pid_file = logs/stat_collector.pid
+# error, warn, info, debug
+log_level = debug
+
+eio_thread_count = 4
+
+collect_port = 50040
+query_port = 8081
+
+ #config for mysql
+db_addr = 10.232.36.98
+db_port = 3306
+db_user = root
+db_pass = ocsadmin
+db_name = yyu
+
+[oms]
+content_domain = OCS
+flag_domain = SYS_READY_FLAG
+url = http://10.147.36.214:80/
+access_key = yrf4b8v5AA7QhILeHz3sLtISu67rqx
+access_id = F6WoaJkPAsi1SrF4
+
+[cms]
+url = http://10.125.197.123:8080/metrics/putLines
+namespace = acs/ocs

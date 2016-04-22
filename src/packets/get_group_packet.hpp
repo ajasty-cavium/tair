@@ -7,7 +7,7 @@
  *
  * this packet is for client to pull table from configserver
  *
- * Version: $Id$
+ * Version: $Id: get_group_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -30,6 +30,7 @@ namespace tair {
       }
 
       request_get_group(const request_get_group &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_GET_GROUP_PACKET);
          set_group_name(packet.group_name);
@@ -40,13 +41,17 @@ namespace tair {
       {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_SPECIAL;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(config_version);
          output->writeString(group_name);
          return true;
       }
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 8) {
             log_warn("buffer data too few.");
@@ -59,7 +64,7 @@ namespace tair {
       }
 
       // set_group_name
-      void set_group_name(const char *group_name_value) 
+      void set_group_name(const char *group_name_value)
       {
          group_name[0] = '\0';
          if (group_name_value != NULL) {
@@ -72,6 +77,7 @@ namespace tair {
       char group_name[64];
       uint32_t config_version;
    };
+
    class response_get_group : public base_packet, public server_hash_table_packet {
    public:
       response_get_group()
@@ -87,8 +93,11 @@ namespace tair {
       {
       }
 
+      virtual base_packet::Type get_type() {
+         return base_packet::RESP_COMMON;
+      }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(bucket_count);
          output->writeInt32(copy_count);
@@ -116,7 +125,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 12) {
             log_warn("buffer data too few.");

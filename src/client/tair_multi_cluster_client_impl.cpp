@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: tair_multi_cluster_client_impl.cpp 3034 2014-11-03 07:25:13Z yuming $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -103,6 +103,13 @@ namespace tair
     return ret;
   }
 
+  int tair_multi_cluster_client_impl::get(int area, const data_entry& key, callback_get_pt cb, void *args)
+  {
+    int ret = TAIR_RETURN_SERVER_CAN_NOT_WORK;
+    ONE_CLUSTER_HANDLER_OP(ret, key, get(area, key, cb, args));
+    return ret;
+  }
+
   int tair_multi_cluster_client_impl::put(int area, const data_entry& key, const data_entry& data,
                                           int expire, int version, bool fill_cache, TAIRCALLBACKFUNC pfunc, void* arg)
   {
@@ -153,6 +160,59 @@ namespace tair
     {
       ONE_CLUSTER_HANDLER_OP(ret, *keys[0], mget(area, keys, data));
     }
+    return ret;
+  }
+
+  int tair_multi_cluster_client_impl::prefix_get(int area, const data_entry &pkey, const data_entry &skey, data_entry *&value)
+  {
+    int ret = TAIR_RETURN_SERVER_CAN_NOT_WORK;
+    ONE_CLUSTER_HANDLER_OP(ret, pkey, prefix_get(area, pkey, skey, value));
+    return ret;
+  }
+
+  int tair_multi_cluster_client_impl::prefix_gets(int area, const data_entry &pkey, const tair_dataentry_set &skey_set,
+                          tair_keyvalue_map &result_map, key_code_map_t &failed_map)
+  {
+    int ret = TAIR_RETURN_SERVER_CAN_NOT_WORK;
+    ONE_CLUSTER_HANDLER_OP(ret, pkey, prefix_gets(area, pkey, skey_set, result_map, failed_map));
+    return ret;
+  }
+
+  int tair_multi_cluster_client_impl::prefix_gets(int area, const data_entry &pkey, const tair_dataentry_vector &skeys,
+                            tair_keyvalue_map &result_map, key_code_map_t &failed_map)
+  {
+    int ret = TAIR_RETURN_SERVER_CAN_NOT_WORK;
+    ONE_CLUSTER_HANDLER_OP(ret, pkey, prefix_gets(area, pkey, skeys, result_map, failed_map));
+    return ret;
+  }
+
+  int tair_multi_cluster_client_impl::prefix_put(int area, const data_entry &pkey, const data_entry &skey,
+                         const data_entry &value, int expire, int version)
+  {
+    int ret = TAIR_RETURN_SERVER_CAN_NOT_WORK;
+    ALL_CLUSTER_HANDLER_OP(ret, pkey, prefix_put(area, pkey, skey, value, expire, version));
+    return ret;
+  }
+
+  int tair_multi_cluster_client_impl::prefix_puts(int area, const data_entry &pkey,
+                  const vector<tair::common::key_value_pack_t*> &skey_value_packs, key_code_map_t &failed_map)
+  {
+    int ret = TAIR_RETURN_SERVER_CAN_NOT_WORK;
+    ALL_CLUSTER_HANDLER_OP(ret, pkey, prefix_puts(area, pkey, skey_value_packs, failed_map));
+    return ret;
+  }
+
+  int tair_multi_cluster_client_impl::prefix_remove(int area, const data_entry &pkey, const data_entry &skey)
+  {
+    int ret = TAIR_RETURN_SERVER_CAN_NOT_WORK;
+    ALL_CLUSTER_HANDLER_OP(ret, pkey, prefix_remove(area, pkey, skey));
+    return ret;
+  }
+
+  int tair_multi_cluster_client_impl::prefix_removes(int area, const data_entry &pkey, const tair_dataentry_set &skey_set, key_code_map_t &key_code_map)
+  {
+    int ret = TAIR_RETURN_SERVER_CAN_NOT_WORK;
+    ALL_CLUSTER_HANDLER_OP(ret, pkey, prefix_removes(area, pkey, skey_set, key_code_map));
     return ret;
   }
 

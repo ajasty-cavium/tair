@@ -27,6 +27,10 @@ namespace tair {
         request_hide(request_hide &packet): request_get(packet) {
             setPCode(TAIR_REQ_HIDE_PACKET);
         }
+
+        virtual base_packet::Type get_type() {
+          return base_packet::REQ_WRITE;
+        }
     };
 }
 #endif

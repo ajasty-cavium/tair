@@ -27,6 +27,10 @@ namespace tair {
     request_prefix_get_hiddens(request_prefix_get_hiddens &rhs) : request_get(rhs) {
       setPCode(TAIR_REQ_PREFIX_GET_HIDDENS_PACKET);
     }
+
+    virtual base_packet::Type get_type() {
+      return base_packet::REQ_READ;
+    }
   };
 }
 

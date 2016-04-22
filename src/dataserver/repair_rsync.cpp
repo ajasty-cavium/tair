@@ -6,8 +6,8 @@
  * published by the Free Software Foundation.
  *
  * repair failed record when doing remote synchronization
- * 
- * Version: $Id$
+ *
+ * Version: $Id: repair_rsync.cpp 2935 2014-09-09 09:35:24Z yunhen $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -31,6 +31,8 @@ using tair::FailRecord;
 
 
 static bool g_stop = false;
+static int64_t g_put_but_local_not_exist_count = 0;
+static int64_t g_delete_but_local_exist_count = 0;
 
 void sign_handler(int sig)
 {
@@ -82,7 +84,7 @@ ClusterHandler* get_handler(const std::string& cluster_info, std::map<std::strin
     }
     else
     {
-      handlers[handler->info()] = handler;
+      handlers[handler->get_info()] = handler;
     }
   }
   return handler;
@@ -103,10 +105,6 @@ int get_from_local_cluster(ClusterHandler& handler, data_entry& key, data_entry*
   if (ret == TAIR_RETURN_HIDDEN)
   {
     ret  = TAIR_RETURN_SUCCESS;
-  }
-  else if (ret == TAIR_RETURN_DATA_EXPIRED)
-  {
-    ret = TAIR_RETURN_DATA_NOT_EXIST;
   }
 
   return ret;
@@ -140,8 +138,8 @@ int do_rsync_data(ClusterHandler& local_handler, ClusterHandler& remote_handler,
     case TAIR_REMOTE_SYNC_TYPE_PUT:
       if (ret == TAIR_RETURN_SUCCESS)
       {
-        log_error("@@ edate : %d %d %d", key.data_meta.mdate, key.data_meta.edate, value->data_meta.edate);
-        ret = remote_handler.client()->put(key.get_area(), key, *value, 0, 0, false);
+        log_debug("@@ edate : %d %d %d", key.data_meta.mdate, key.data_meta.edate, value->data_meta.edate);
+        ret = remote_handler.client()->put(key.get_area(), key, *value, value->data_meta.edate, value->data_meta.version, false);
         if (ret == TAIR_RETURN_MTIME_EARLY)
         {
           ret = TAIR_RETURN_SUCCESS;
@@ -149,7 +147,8 @@ int do_rsync_data(ClusterHandler& local_handler, ClusterHandler& remote_handler,
       }
       else
       {
-        log_warn("put but data not exist in local");
+        log_info("put but data not exist in local");
+        ++g_put_but_local_not_exist_count;
         ret = TAIR_RETURN_SUCCESS;
       }
       break;
@@ -157,14 +156,15 @@ int do_rsync_data(ClusterHandler& local_handler, ClusterHandler& remote_handler,
       if (ret == TAIR_RETURN_DATA_NOT_EXIST)
       {
         ret = remote_handler.client()->remove(key.get_area(), key);
-        if (ret == TAIR_RETURN_DATA_NOT_EXIST || ret == TAIR_RETURN_DATA_EXPIRED || ret == TAIR_RETURN_MTIME_EARLY)
+        if (ret == TAIR_RETURN_DATA_NOT_EXIST || ret == TAIR_RETURN_MTIME_EARLY)
         {
           ret = TAIR_RETURN_SUCCESS;
         }
       }
       else
       {
-        log_warn("delete but data exist in local");
+        log_info("delete but data exist in local");
+        ++g_delete_but_local_exist_count;
         ret = TAIR_RETURN_SUCCESS;
       }
       break;
@@ -188,7 +188,7 @@ int do_repair_rsync(ClusterHandler& local_handler, RecordLogger* logger, RecordL
   int32_t index = 0;
   int64_t count = 0;
   int64_t fail_count = 0;
-  uint32_t start_time = time(NULL);
+  time_t start_time = time(NULL);
 
   int32_t type;
   int32_t bucket_num = -1;
@@ -244,6 +244,18 @@ int do_repair_rsync(ClusterHandler& local_handler, RecordLogger* logger, RecordL
     // log failed record again
     if (ret != TAIR_RETURN_SUCCESS)
     {
+      if (fail_count == 0)
+      {
+        // init fail logger
+        int tmp_ret;
+        if ((tmp_ret = fail_logger->init()) != TAIR_RETURN_SUCCESS)
+        {
+          log_error("init fail logger fail, ret: %d", tmp_ret);
+          ret = tmp_ret;
+          break;
+        }
+      }
+
       ++fail_count;
 
       log_error("fail one %d", ret);
@@ -251,6 +263,7 @@ int do_repair_rsync(ClusterHandler& local_handler, RecordLogger* logger, RecordL
       if (ret != TAIR_RETURN_SUCCESS)
       {
         log_error("add to fail logger fail: %d", ret);
+        break;
       }
     }
 
@@ -266,18 +279,33 @@ int do_repair_rsync(ClusterHandler& local_handler, RecordLogger* logger, RecordL
       key = NULL;
     }
     cluster_info.clear();
+    ret = TAIR_RETURN_SUCCESS;
   }
 
+  // cleanup all over
+  if (record_key != NULL)
+  {
+    delete record_key;
+    record_key = NULL;
+  }
+  if (key != NULL)
+  {
+    delete key;
+    key = NULL;
+  }
   for (std::map<std::string, tair::ClusterHandler*>::iterator it = remote_handlers.begin();
        it != remote_handlers.end(); ++it)
   {
     delete it->second;
   }
 
-  log_warn("repair over. stopped: %s, total count: %ld, fail count: %ld, cost: %d(s)",
-           g_stop ? "yes" : "no", count, fail_count, time(NULL) - start_time);
+  log_warn("repair over. stopped: %s, total count: %ld, fail count: %ld, put_but_local_not_exist count: %ld, delete_but_local_exist count: %ld, cost: %ld(s)",
+           g_stop ? "yes" : "no",
+           count, fail_count, g_put_but_local_not_exist_count, g_delete_but_local_exist_count,
+           time(NULL) - start_time);
 
-  return fail_count > 0 ? TAIR_RETURN_FAILED : TAIR_RETURN_SUCCESS;
+  // consider stop early as fail
+  return g_stop ? TAIR_RETURN_FAILED : ret;
 }
 
 void print_help(const char* name)
@@ -327,16 +355,13 @@ int main(int argc, char* argv[])
   RecordLogger* logger = new SequentialFileRecordLogger(file, 0, false);
   // log failed record when repairing
   std::string fail_file = std::string(file) + ".fail";
+  // lazy init
   RecordLogger* fail_logger = new SequentialFileRecordLogger(fail_file.c_str(), ~((int64_t)1<<63), false);
 
   int ret;
   if ((ret = logger->init()) != TAIR_RETURN_SUCCESS)
   {
     log_error("init logger fail, file: %s, ret: %d", file, ret);
-  }
-  else if ((ret = fail_logger->init()) != TAIR_RETURN_SUCCESS)
-  {
-    log_error("init fail logger fail, ret: %d", ret);
   }
   else
   {
@@ -348,18 +373,13 @@ int main(int argc, char* argv[])
     }
     else
     {
+      log_warn("start repair rsync faillog: %s", file);
       ret = do_repair_rsync(local_handler, logger, fail_logger);
     }
   }
 
   delete logger;
   delete fail_logger;
-
-  if (ret == TAIR_RETURN_SUCCESS)
-  {
-    // unlink fail file if all succeed
-    ::unlink(fail_file.c_str());
-  }
 
   return ret == TAIR_RETURN_SUCCESS ? 0 : 1;
 }

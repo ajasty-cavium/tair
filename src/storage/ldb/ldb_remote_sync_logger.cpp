@@ -7,7 +7,7 @@
  *
  * RecordLogger implementation of ldb
  *
- * Version: $Id$
+ * Version: $Id: ldb_remote_sync_logger.cpp 2702 2014-07-01 05:43:22Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -27,44 +27,77 @@
 #include "ldb_instance.hpp"
 #include "ldb_remote_sync_logger.hpp"
 
+#include "common/result.hpp"
+#include "common/record.hpp"
+
 namespace tair
 {
   namespace storage
   {
     namespace ldb
     {
-      using common::data_entry;
+      using tair::common::data_entry;
 
       //////////////////////////////////
       // LdbRemoteSyncLogReader
       //////////////////////////////////
-      LdbRemoteSyncLogReader::LdbRemoteSyncLogReader(LdbInstance* instance) :
+      LdbRemoteSyncLogReader::LdbRemoteSyncLogReader(LdbInstance* instance, bool new_way, bool delete_file) :
         instance_(instance), first_sequence_(0), reading_logfile_number_(0), reader_(NULL), last_logfile_refed_(false),
-        last_sequence_(0)
+        last_sequence_(0), min_position_(), delete_file_(delete_file)
       {
-        last_log_record_ = new leveldb::Slice();
-        start_new_reader(0);
+        new_way_ = new_way;
+        last_record_offset_ = 0;
+        last_log_record_    = new leveldb::Slice();
+        records_head_of_log_file_ = new std::queue<tair::common::Record*>();
+        max_bucket_count_ = 0;
+        buffer_size_ = 10;
+        start_new_reader(0, 0);
+      }
+
+      LdbRemoteSyncLogReader::LdbRemoteSyncLogReader(LdbInstance* instance,
+          int max_bucket_count, tair::common::RecordPosition& position, bool new_way, bool delete_file)
+      {
+        new_way_                 = new_way;
+        instance_                = instance;
+        reading_logfile_number_  = 0;
+        reader_                  = NULL;
+        last_logfile_refed_      = false;
+        last_sequence_           = 0;
+        delete_file_             = delete_file;
+        last_record_offset_      = 0;
+        last_log_record_         = new leveldb::Slice();
+        records_head_of_log_file_ = new std::queue<tair::common::Record*>();
+        max_bucket_count_         = max_bucket_count;
+        buffer_size_              = 10;
+
+        first_sequence_ = position.sequence_;
+        uint64_t file_number = position.filenumber_;
+        file_number = (file_number == 0 ? 0 : (file_number - 1));
+        start_new_reader(file_number, position.fileoffset_);
       }
 
       LdbRemoteSyncLogReader::~LdbRemoteSyncLogReader()
       {
-        if (last_log_record_ != NULL)
-        {
+        if (last_log_record_ != NULL) {
           delete last_log_record_;
         }
 
-        if (reader_ != NULL)
-        {
-          if (last_logfile_refed_)
-          {
-            dynamic_cast<leveldb::ReadableAndWritableFile*>(reader_->File())->Unref();
+        if (records_head_of_log_file_ != NULL) {
+          while (!records_head_of_log_file_->empty()) {
+            delete records_head_of_log_file_->front();
+            records_head_of_log_file_->pop();
           }
-          else
-          {
-            delete reader_->File();
-          }
-          delete reader_;
+          delete records_head_of_log_file_;
         }
+
+        clear_reader(0);
+      }
+
+      LdbRemoteSyncLogReader* LdbRemoteSyncLogReader::clone()
+      {
+        // not copy record at head of log file,
+        // because we use its position in bin log, so it will read again
+        return new LdbRemoteSyncLogReader(instance_, max_bucket_count_, min_position_, true, delete_file_);
       }
 
       int LdbRemoteSyncLogReader::init()
@@ -72,17 +105,78 @@ namespace tair
         return TAIR_RETURN_SUCCESS;
       }
 
-      int LdbRemoteSyncLogReader::restart()
+      uint64_t LdbRemoteSyncLogReader::restart()
       {
         if (instance_->db_ != NULL)
         {
           // restart first sequence
           first_sequence_ = dynamic_cast<leveldb::DBImpl*>(instance_->db_)->LastSequence() + 1;
+          log_warn("reader restart, first_sequence: %"PRI64_PREFIX"u", first_sequence_);
         }
-        return TAIR_RETURN_SUCCESS;
+        return first_sequence_;
       }
 
-      int LdbRemoteSyncLogReader::get_record(int32_t& type, int32_t& bucket_num,
+      void LdbRemoteSyncLogReader::delete_log_file(uint64_t filenumber)
+      {
+        dynamic_cast<leveldb::DBImpl*>(instance_->db_)->DeleteLogFile(filenumber);
+      }
+
+      tair::common::Result<std::queue<tair::common::Record*>* > LdbRemoteSyncLogReader::get_records()
+      {
+        size_t size = records_head_of_log_file_->size();
+        size_t count = buffer_size_ > size ? buffer_size_ - size : 0;
+        for (size_t i = 0; i < count; i++) {
+          int32_t type          = 0;
+          int32_t bucket        = -1;
+          int32_t origin_bucket = -1;
+          data_entry* key   = NULL;
+          data_entry* value = NULL;
+          bool force_reget  = false;
+          int ret = get_record(type, bucket, origin_bucket, key, value, force_reget);
+          if (ret == TAIR_RETURN_SUCCESS && key != NULL) {
+            tair::common::RecordPosition position;
+            position.instance_   = instance_->index_;
+            position.filenumber_ = reading_logfile_number_;
+            position.fileoffset_ = last_record_offset_;
+            position.sequence_  = last_sequence_;
+
+            if (min_position_.valid() == false) {
+              log_warn("just happen at start rsync or new log reader");
+              min_position_ = position;
+            }
+            Record* record = new KVRecord(position, (TairRemoteSyncType)type, bucket, force_reget, key, value);
+            record->set_origin_bucket(origin_bucket);
+            records_head_of_log_file_->push(record);
+          } else {
+            break;
+          }
+        }
+
+        // position will update at Function update
+        // get_records will never increase position
+
+        if (!records_head_of_log_file_->empty()) {
+          return Result<std::queue<tair::common::Record*>* >(records_head_of_log_file_, TAIR_RETURN_SUCCESS);
+        } else {
+          // all kvs are slave kv
+          if (min_position_.valid() == false || reading_logfile_number_ > min_position_.filenumber_) {
+            min_position_.instance_ = instance_->index_;
+            min_position_.filenumber_ = reading_logfile_number_;
+            min_position_.set_undefined();
+          }
+        }
+
+        return Result<std::queue<tair::common::Record*>* >(NULL, TAIR_RETURN_DATA_NOT_EXIST);
+      }
+
+      void LdbRemoteSyncLogReader::update() {
+        assert(records_head_of_log_file_->empty() == false);
+        tair::common::Record* record = records_head_of_log_file_->front();
+        min_position_ = record->position_;
+        records_head_of_log_file_->pop();
+      }
+
+      int LdbRemoteSyncLogReader::get_record(int32_t& type, int32_t& bucket_num, int32_t& origin_bucket_num,
                                              data_entry*& key, data_entry*& value, bool& force_reget)
       {
         if (NULL == instance_->db_)
@@ -101,7 +195,7 @@ namespace tair
           if (last_log_record_->size() <= 0)
           {
             ret = get_log_record();
-            log_debug("@@ get new record: %d", last_log_record_->size());
+            log_debug("@@ get new record: %zu", last_log_record_->size());
           }
 
           // maybe read over all current writing log record
@@ -127,15 +221,44 @@ namespace tair
           }
         }
 
+        origin_bucket_num = bucket_num;
+        if (ret == TAIR_RETURN_SUCCESS && key != NULL && max_bucket_count_ > 0) {
+          assert((new_way_ == false && max_bucket_count_ == 0) ||
+              (new_way_ == true && max_bucket_count_ > 0));
+          // re-compute new bucket instead of local cluster bucket
+          bucket_num = recalc_dest_bucket(key);
+          log_debug("max_bucket_count %d, bucket_num %d", max_bucket_count_, bucket_num);
+        }
+
         return ret;
       }
 
-      int LdbRemoteSyncLogReader::start_new_reader(uint64_t min_number)
+      int LdbRemoteSyncLogReader::recalc_dest_bucket(const data_entry* key)
+      {
+        uint32_t hash;
+        int prefix_size = key->get_prefix_size();
+        int32_t diff_size = key->has_merged ? TAIR_AREA_ENCODE_SIZE : 0;
+        if (prefix_size == 0) {
+          hash = util::string_util::mur_mur_hash(key->get_data() + diff_size, key->get_size() - diff_size);
+        } else {
+          hash = util::string_util::mur_mur_hash(key->get_data() + diff_size, prefix_size);
+        }
+
+        return hash % max_bucket_count_;
+      }
+
+      tair::common::RecordPosition LdbRemoteSyncLogReader::get_min_position()
+      {
+        return min_position_;
+      }
+
+      int LdbRemoteSyncLogReader::start_new_reader(uint64_t min_number, uint64_t offset)
       {
         int ret = TAIR_RETURN_SUCCESS;
-
         if (instance_->db_ != NULL)
         {
+          clear_reader(min_number);
+
           leveldb::DBImpl* db = dynamic_cast<leveldb::DBImpl*>(instance_->db_);
           if (first_sequence_ <= 0)
           {
@@ -178,53 +301,70 @@ namespace tair
 
           if (0 == new_logfile_number)
           {
-            log_warn("no ldb log for reader");
-            ret = TAIR_RETURN_FAILED;
+            log_info("no ldb log for reader");
           }
           else
           {
-            // file will be Ref()
-            leveldb::SequentialFile* file = db->LogFile(new_logfile_number);
-            bool refed = (file != NULL);
-
-            // not current writing log, current writing db logger will be ReadableAndWritableFile
-            if (NULL == file)
-            {
-              std::string fname = leveldb::LogFileName(db_log_dir, new_logfile_number);
-              s = db_env->NewSequentialFile(fname, &file);
-              if (!s.ok())
-              {
-                log_error("init to read log file %s fail: %s", fname.c_str(), s.ToString().c_str());
-                ret = TAIR_RETURN_FAILED;
-              }
-            }
-
-            if (TAIR_RETURN_SUCCESS == ret)
-            {
-              reading_logfile_number_ = new_logfile_number;
-              if (reader_ != NULL)
-              {
-                if (last_logfile_refed_)
-                {
-                  dynamic_cast<leveldb::ReadableAndWritableFile*>(reader_->File())->Unref();
-                }
-                else
-                {
-                  delete reader_->File();
-                }
-                delete reader_;
-                db_env->DeleteFile(leveldb::LogFileName(db_log_dir, min_number));
-              }
-
-              // TODO: reporter
-              log_debug("start new ldb rsync reader, filenumber: %"PRI64_PREFIX"u", reading_logfile_number_);
-              reader_ = new leveldb::log::Reader(file, NULL, true, 0);
-              last_logfile_refed_ = refed;
-            }
+            ret = init_reader(new_logfile_number, offset);
           }
         }
 
         return ret;
+      }
+
+      int LdbRemoteSyncLogReader::init_reader(uint64_t number, uint64_t offset)
+      {
+        leveldb::Status s;
+        leveldb::DBImpl* db = dynamic_cast<leveldb::DBImpl*>(instance_->db_);
+        // file will be Ref()
+        leveldb::RandomAccessFile* rfile = db->LogFile(number);
+        bool refed = (rfile != NULL);
+        leveldb::SequentialFile* sfile = NULL;
+
+        // not current writing log, current writing db logger will be ReadableAndWritableFile
+        if (NULL == rfile)
+        {
+          std::string fname = leveldb::LogFileName(db->DBLogDir(), number);
+          s = db->GetEnv()->NewSequentialFile(fname, &sfile);
+          if (!s.ok())
+          {
+            log_error("init to read log file %s fail: %s", fname.c_str(), s.ToString().c_str());
+          }
+        }
+
+        if (s.ok())
+        {
+          reading_logfile_number_ = number;
+          // TODO: reporter
+          log_debug("start new ldb rsync reader, filenumber: %"PRI64_PREFIX"u offset %"PRI64_PREFIX"u",
+              reading_logfile_number_, offset);
+          reader_ = rfile != NULL ?
+            new leveldb::log::Reader(rfile, NULL, true, offset) :
+            new leveldb::log::Reader(sfile, NULL, true, offset);
+          last_logfile_refed_ = refed;
+        }
+        return s.ok() ? TAIR_RETURN_SUCCESS : TAIR_RETURN_FAILED;
+      }
+
+      void LdbRemoteSyncLogReader::clear_reader(uint64_t number)
+      {
+        if (reader_ != NULL)
+        {
+          if (last_logfile_refed_)
+          {
+            dynamic_cast<leveldb::ReadableAndWritableFile*>(reader_->RFile())->Unref();
+          }
+          else
+          {
+            delete reader_->SFile();
+          }
+          delete reader_;
+          reader_ = NULL;
+          if (delete_file_ && number > 0)
+          {
+            dynamic_cast<leveldb::DBImpl*>(instance_->db_)->DeleteLogFile(number);
+          }
+        }
       }
 
       bool LdbRemoteSyncLogReader::update_last_sequence()
@@ -243,6 +383,7 @@ namespace tair
           ++last_sequence_;
         }
 
+        if (new_way_ == true) return false; // new way never reget
         // records before this startup should be re-get again to get current status.
         return (last_sequence_ < first_sequence_);
       }
@@ -263,19 +404,25 @@ namespace tair
 
           if (need_new_reader)
           {
-            ret = start_new_reader(reading_logfile_number_);
+            ret = start_new_reader(reading_logfile_number_, 0);
             if (ret != TAIR_RETURN_SUCCESS)
             {
               log_error("start new log reader fail: %d", ret);
               break;
             }
+            // no log for reader
+            if (reader_ == NULL)
+            {
+              break;
+            }
+
             need_new_reader = false;
           }
 
           // reading earlier log
           if (reading_logfile_number_ < db_logfile_number)
           {
-            log_debug("@@ from earlier log: %d", reading_logfile_number_);
+            log_debug("@@ from earlier log: %lu", reading_logfile_number_);
             // read over one earlier whole log
             if (!reader_->ReadRecord(last_log_record_, &last_log_scratch_, ~((uint64_t)0)))
             {
@@ -287,11 +434,16 @@ namespace tair
           }
           else                  // reading current writting log
           {
-            log_debug("@@ from now log: %d %lu", reading_logfile_number_, db_logfile_size);
+            log_debug("@@ from now log: %lu %lu", reading_logfile_number_, db_logfile_size);
             reader_->ReadRecord(last_log_record_, &last_log_scratch_, db_logfile_size);
             // read one record OR read over all written record, both OK.
             break;
           }
+        }
+
+        if (reader_ != NULL)
+        {
+          last_record_offset_ = reader_->LastRecordOffset();
         }
 
         return ret;
@@ -300,10 +452,12 @@ namespace tair
       int LdbRemoteSyncLogReader::parse_one_kv_record(int32_t& type, int32_t& bucket_num,
                                                       data_entry*& key, data_entry*& value, bool skip_value)
       {
+        char record_type;
         int ret = TAIR_RETURN_SUCCESS;
 
-        char record_type;
-        bool skipped = try_skip_one_kv_record(record_type);
+        bool is_from_unit = false;
+
+        bool skipped = try_skip_one_kv_record(record_type, is_from_unit);
 
         if (!skipped)
         {
@@ -354,6 +508,11 @@ namespace tair
           }
         }
 
+        if (is_from_unit == true && ret == TAIR_RETURN_SUCCESS && key != NULL)
+        {
+          set_meta_flag_unit(key->data_meta.flag);
+        }
+
         return ret;
       }
 
@@ -399,7 +558,7 @@ namespace tair
 
       bool LdbRemoteSyncLogReader::parse_one_entry_tailer(data_entry* entry)
       {
-        leveldb::Slice tailer_slice; 
+        leveldb::Slice tailer_slice;
         bool ret = leveldb::GetLengthPrefixedSlice(last_log_record_, &tailer_slice);
         log_debug("@@ parse del tail ret : %d", ret);
         if (ret)
@@ -416,13 +575,21 @@ namespace tair
         return leveldb::SkipLengthPrefixedSlice(last_log_record_);
       }
 
-      bool LdbRemoteSyncLogReader::try_skip_one_kv_record(char& type)
+      bool LdbRemoteSyncLogReader::try_skip_one_kv_record(char& type, bool& is_from_unit)
       {
         type = last_log_record_->data()[0];
         last_log_record_->remove_prefix(1);
 
         // synced(duplicate/migrate) data need no remote synchronization
         bool skipped = leveldb::TestSyncMask(type);
+        if (leveldb::TestUnitMask(type))
+        {
+          type = leveldb::OffUnitMask(type);
+          is_from_unit = true;
+        } else {
+          is_from_unit = false;
+        }
+
         if (skipped)
         {
           int32_t skip_entry_count = 0;
@@ -465,6 +632,7 @@ namespace tair
         reader_ = new LdbRemoteSyncLogReader*[reader_count_];
         for (int32_t i = 0; i < reader_count_; ++i)
         {
+          // because this logger use for old remote sync manager, so we just use TAIR_DEFAULT_BUCKET_NUMBER
           reader_[i] = new LdbRemoteSyncLogReader(manager_->ldb_instance_[i]);
         }
       }
@@ -497,16 +665,12 @@ namespace tair
 
       int LdbRemoteSyncLogger::restart()
       {
-        int ret = TAIR_RETURN_SUCCESS;
         for (int32_t i = 0; i < reader_count_; ++i)
         {
-          if ((ret = reader_[i]->init()) != TAIR_RETURN_SUCCESS)
-          {
-            log_error("restart reader %d fail, ret: %d", i, ret);
-            break;
-          }
+          uint64_t first_seq = reader_[i]->restart();
+          log_error("restart instance %d reader, seq: %llu", i, (unsigned long long)first_seq);
         }
-        return ret;
+        return TAIR_RETURN_SUCCESS;
       }
 
       int LdbRemoteSyncLogger::add_record(int32_t index, int32_t type,
@@ -527,11 +691,11 @@ namespace tair
         }
         else
         {
-          ret = reader_[index]->get_record(type, bucket_num, key, value, force_reget);
+          int32_t origin_bucket_num = -1;
+          ret = reader_[index]->get_record(type, bucket_num, origin_bucket_num, key, value, force_reget);
         }
         return ret;
       }
-
     }
   }
 }

@@ -93,31 +93,31 @@ private:
 class CMutexLock
 {
 public:
-	CMutexLock(pthread_mutex_t& mutex): m_pmutex(&mutex)
-	{
-		pthread_mutex_lock(m_pmutex);
-	}
-	~CMutexLock()
-	{
-		pthread_mutex_unlock(m_pmutex);
-		m_pmutex = NULL;
-	}
-	void Lock()
+  CMutexLock(pthread_mutex_t& mutex): m_pmutex(&mutex)
+  {
+    pthread_mutex_lock(m_pmutex);
+  }
+  ~CMutexLock()
+  {
+    pthread_mutex_unlock(m_pmutex);
+    m_pmutex = NULL;
+  }
+  void Lock()
     {
-		pthread_mutex_lock(m_pmutex);
-	}
-	void UnLock()
+    pthread_mutex_lock(m_pmutex);
+  }
+  void UnLock()
     {
-		pthread_mutex_unlock(m_pmutex);
-	}
-	bool IsLocked()
+    pthread_mutex_unlock(m_pmutex);
+  }
+  bool IsLocked()
     {
-		return (pthread_mutex_trylock(m_pmutex) == 0) ? true : false;
-	}
+    return (pthread_mutex_trylock(m_pmutex) == 0) ? true : false;
+  }
 private:
     CMutexLock() : m_pmutex(NULL) { }
 private:
-	pthread_mutex_t* m_pmutex;
+  pthread_mutex_t* m_pmutex;
 };
 
 class CSemaphore
@@ -137,10 +137,10 @@ public:
     }
     void Consume()
     {
-		while (sem_wait(&m_sem) != 0)
-		{
-			sched_yield();
-		}
+    while (sem_wait(&m_sem) != 0)
+    {
+      sched_yield();
+    }
     }
     bool Try()
     {
@@ -150,21 +150,21 @@ public:
             return false;
         return true;
     }
-	//微秒部分，尽量不要使用超过500000微秒的值，不然会导致CPU或者LOAD上升。化整到秒的部分是没有问题的，比如2000000即2秒.
+  //微秒部分，尽量不要使用超过500000微秒的值，不然会导致CPU或者LOAD上升。化整到秒的部分是没有问题的，比如2000000即2秒.
     bool TryTime(int micSec)
     {
-	    struct timespec ts;
-		clock_gettime(CLOCK_REALTIME,&ts);
-		if(micSec >= 1000000)
-			ts.tv_sec += micSec/1000000;
-		ts.tv_nsec += micSec%1000000*1000;
-		if(ts.tv_nsec >= 1000000000)
-		{
-			++ts.tv_sec;
-			ts.tv_nsec -= 1000000000;
-		}
+      struct timespec ts;
+    clock_gettime(CLOCK_REALTIME,&ts);
+    if(micSec >= 1000000)
+      ts.tv_sec += micSec/1000000;
+    ts.tv_nsec += micSec%1000000*1000;
+    if(ts.tv_nsec >= 1000000000)
+    {
+      ++ts.tv_sec;
+      ts.tv_nsec -= 1000000000;
+    }
 
-		int ret = sem_timedwait(&m_sem,&ts);
+    int ret = sem_timedwait(&m_sem,&ts);
         if(ret < 0)
             return false;
         return true;
@@ -184,8 +184,8 @@ private:
     sem_t  m_sem;
 };
 
-static struct sembuf lock={0,-1,SEM_UNDO};
-static struct sembuf unlock={0,1,SEM_UNDO|IPC_NOWAIT};
+static struct sembuf sb_lock={0,-1,SEM_UNDO};
+static struct sembuf sb_unlock={0,1,SEM_UNDO|IPC_NOWAIT};
 
 class CSemOper
 {
@@ -206,14 +206,14 @@ public:
     }
     void Produce()
     {
-        semop(m_semid, &unlock, 1);
+        semop(m_semid, &sb_unlock, 1);
     }
     void Consume()
     {
-	while (semop(m_semid, &lock, 1) != 0)
-	{
-		sched_yield();
-	}
+  while (semop(m_semid, &sb_lock, 1) != 0)
+  {
+    sched_yield();
+  }
     }
     int GetCount()
     {
@@ -229,11 +229,11 @@ public:
     CSemLock(int semid)
     {
         m_semid = semid;
-        semop(m_semid, &lock, 1);
+        semop(m_semid, &sb_lock, 1);
     }
     ~CSemLock()
     {
-        semop(m_semid, &unlock, 1);
+        semop(m_semid, &sb_unlock, 1);
     }
 private:
     int  m_semid;
@@ -272,7 +272,7 @@ public:
     }
     void Consume(int tmms)
     {
-	    struct timeval now;
+      struct timeval now;
         struct timespec timeout;
         struct timezone tz;
         gettimeofday(&now, &tz);
@@ -284,45 +284,45 @@ public:
         pthread_mutex_lock(&m_mutex);
         while(m_count == 0)
         {
-		    pthread_cond_timedwait(&m_cond, &m_mutex, &timeout);
+        pthread_cond_timedwait(&m_cond, &m_mutex, &timeout);
         }
         if(m_count > 0) m_count--;
-	    pthread_mutex_unlock(&m_mutex);
+      pthread_mutex_unlock(&m_mutex);
     }
 
-	int ConsumeTimeWait(int tmms)
-	{
-		struct timeval now;
-		struct timespec timeout;
-		struct timezone tz;
-		gettimeofday(&now, &tz);
-		int sec = tmms/1000;
-		int nano = (tmms%1000)*1000000;
-		timeout.tv_sec = now.tv_sec + sec;
-		timeout.tv_nsec = now.tv_usec*1000 + nano;
+  int ConsumeTimeWait(int tmms)
+  {
+    struct timeval now;
+    struct timespec timeout;
+    struct timezone tz;
+    gettimeofday(&now, &tz);
+    int sec = tmms/1000;
+    int nano = (tmms%1000)*1000000;
+    timeout.tv_sec = now.tv_sec + sec;
+    timeout.tv_nsec = now.tv_usec*1000 + nano;
 
-		if(timeout.tv_nsec >= 1000000000)
-		{
-			timeout.tv_sec += 1;
-			timeout.tv_nsec -= 1000000000;
-		}
+    if(timeout.tv_nsec >= 1000000000)
+    {
+      timeout.tv_sec += 1;
+      timeout.tv_nsec -= 1000000000;
+    }
 
-		pthread_mutex_lock(&m_mutex);
-		if(m_count > 0)
-		{
-			m_count--;
-			pthread_mutex_unlock(&m_mutex);
-			return 0;
-		}
+    pthread_mutex_lock(&m_mutex);
+    if(m_count > 0)
+    {
+      m_count--;
+      pthread_mutex_unlock(&m_mutex);
+      return 0;
+    }
 
-		int ret = pthread_cond_timedwait(&m_cond, &m_mutex, &timeout);
-		if((0 == ret) && (m_count > 0))
-			m_count--;
-		else
-			ret = -1;
-		pthread_mutex_unlock(&m_mutex);
-		return ret;
-	}
+    int ret = pthread_cond_timedwait(&m_cond, &m_mutex, &timeout);
+    if((0 == ret) && (m_count > 0))
+      m_count--;
+    else
+      ret = -1;
+    pthread_mutex_unlock(&m_mutex);
+    return ret;
+  }
 private:
     pthread_mutex_t m_mutex;
     pthread_cond_t  m_cond;
@@ -332,44 +332,44 @@ private:
 class CMutexObj
 {
 public:
-	CMutexObj(){
-		pthread_mutex_init(&m_mutex, NULL);
-	}
-	~CMutexObj(){
-		if(IsLocked())
-			UnLock();	
-	}
-	void Lock(){
-		pthread_mutex_lock(&m_mutex);
-	}
-	void UnLock(){
-		pthread_mutex_unlock(&m_mutex);
-	}	
-	bool IsLocked()
+  CMutexObj(){
+    pthread_mutex_init(&m_mutex, NULL);
+  }
+  ~CMutexObj(){
+    if(IsLocked())
+      UnLock();
+  }
+  void Lock(){
+    pthread_mutex_lock(&m_mutex);
+  }
+  void UnLock(){
+    pthread_mutex_unlock(&m_mutex);
+  }
+  bool IsLocked()
     {
-		return (pthread_mutex_trylock(&m_mutex) == 0) ? true : false;
-	}
-	
-private:	
-	pthread_mutex_t m_mutex;
+    return (pthread_mutex_trylock(&m_mutex) == 0) ? true : false;
+  }
+
+private:
+  pthread_mutex_t m_mutex;
 };
 class CMutexObjLock{
 public:
-	CMutexObjLock(CMutexObj& mutex):m_pmutexObj(&mutex)
-	{
-		Lock();
-	}
-	~CMutexObjLock(){
-		UnLock();
-	}
-	void Lock(){
-		m_pmutexObj->Lock();
-	}
-	void UnLock(){
-		m_pmutexObj->UnLock();
-	}
+  CMutexObjLock(CMutexObj& mutex):m_pmutexObj(&mutex)
+  {
+    Lock();
+  }
+  ~CMutexObjLock(){
+    UnLock();
+  }
+  void Lock(){
+    m_pmutexObj->Lock();
+  }
+  void UnLock(){
+    m_pmutexObj->UnLock();
+  }
 
 private:
-	CMutexObj* m_pmutexObj;
+  CMutexObj* m_pmutexObj;
 };
 #endif

@@ -28,14 +28,18 @@ namespace tair {
             setPCode(TAIR_REQ_GET_HIDDEN_PACKET);
         }
 
-        bool encode(tbnet::DataBuffer *output) {
+        virtual base_packet::Type get_type() {
+          return base_packet::REQ_READ;
+        }
+
+        bool encode(DataBuffer *output) {
             if (request_get::encode(output) == false) {
                 return false;
             }
             return true;
         }
 
-        bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) {
+        bool decode(DataBuffer *input, PacketHeader *header) {
             if (request_get::decode(input, header) == false) {
                 return false;
             }

@@ -5,7 +5,7 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  *
- * Version: $Id$
+ * Version: $Id: remote_sync_manager.cpp 2935 2014-09-09 09:35:24Z yunhen $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -22,10 +22,18 @@
 namespace tair
 {
   RemoteSyncManager::RemoteSyncManager(tair_manager* tair_manager)
-    : tair_manager_(tair_manager), paused_(false), max_process_count_(0), processing_count_(0),
-      logger_(NULL), retry_logger_(NULL), fail_logger_(NULL),
-      mtime_care_(false), cluster_inited_(false)
+    : IRemoteSyncManager(IRemoteSyncManager::OLD_VERSION)
   {
+    tair_manager_      = tair_manager;
+    paused_            = false;
+    wait_us_           = 0;
+    max_process_count_ = 0;
+    processing_count_  = 0;
+    logger_            = NULL;
+    retry_logger_      = NULL;
+    fail_logger_       = NULL;
+    mtime_care_        = false;
+    cluster_inited_    = false;
   }
 
   RemoteSyncManager::~RemoteSyncManager()
@@ -60,7 +68,7 @@ namespace tair
     if (!tbsys::CFileUtil::mkdirs(const_cast<char*>(tmp_dir.c_str())))
     {
       log_error("make rsync data directory fail: %s", rsync_dir.c_str());
-      ret = TAIR_RETURN_FAILED;      
+      ret = TAIR_RETURN_FAILED;
     }
     else
     {
@@ -164,31 +172,40 @@ namespace tair
     log_info("remote sync %d run over", index);
   }
 
-  int RemoteSyncManager::pause(bool do_pause)
+  void RemoteSyncManager::pause(bool do_pause)
   {
-    paused_ = do_pause;
-    // resume rsync, logger may need some restart process
-    if (!do_pause)
+    // resume rsync from paused state, logger may need some restart process
+    if (paused_ && !do_pause)
     {
       logger_->restart();
     }
+    paused_ = do_pause;
     log_warn("%s remote sync process.", do_pause ? "pause" : "resume");
-    return TAIR_RETURN_SUCCESS;
+  }
+
+  void RemoteSyncManager::set_wait_us(int64_t us)
+  {
+    if (us >= 0)
+    {
+      wait_us_ = us;
+    }
+    log_warn("set wait us: %"PRI64_PREFIX"d", us);
+  }
+
+  int64_t RemoteSyncManager::get_wait_us()
+  {
+    return wait_us_;
   }
 
   int RemoteSyncManager::set_mtime_care(bool care)
   {
     mtime_care_ = care;
     log_warn("set rsync mtime care: %s", care ? "yes" : "no");
-    return TAIR_RETURN_SUCCESS;    
+    return TAIR_RETURN_SUCCESS;
   }
 
   int RemoteSyncManager::do_remote_sync(int32_t index, RecordLogger* input_logger, bool retry, FilterKeyFunc key_filter)
   {
-    static const int64_t DEFAULT_WAIT_US = 1000000; // 1s
-    static const int64_t REST_WAIT_US = 10000;      // 10ms
-    static const int64_t SPEED_CONTROL_WAIT_US = 2000; // 2ms
-
     int ret = TAIR_RETURN_SUCCESS;
     int32_t type = TAIR_REMOTE_SYNC_TYPE_NONE;
     int32_t bucket_num = -1;
@@ -207,7 +224,7 @@ namespace tair
       {
         log_debug("@@ sleep %ld", need_wait_us);
         usleep(need_wait_us);
-        need_wait_us = 0;
+        need_wait_us = wait_us_;
       }
       if (paused_)
       {
@@ -219,7 +236,7 @@ namespace tair
       if (processing_count_ > max_process_count_)
       {
         need_wait_us = SPEED_CONTROL_WAIT_US;
-        continue;        
+        continue;
       }
 
       // get one remote sync log record.
@@ -324,7 +341,7 @@ namespace tair
         if (ret != TAIR_RETURN_SUCCESS)                                 \
         {                                                               \
           delete arg;                                                   \
-          fail_records.push_back(FailRecord(key, handler->info(), ret)); \
+          fail_records.push_back(FailRecord(key, handler->get_info(), ret)); \
           last_ret = ret;                                               \
         }                                                               \
       }                                                                 \
@@ -345,7 +362,7 @@ namespace tair
         if (ret != TAIR_RETURN_SUCCESS)                                 \
         {                                                               \
           delete arg;                                                   \
-          fail_records.push_back(FailRecord(key, handler->info(), ret)); \
+          fail_records.push_back(FailRecord(key, handler->get_info(), ret)); \
           last_ret = ret;                                               \
         }                                                               \
       }                                                                 \
@@ -372,7 +389,7 @@ namespace tair
       // force reget or this record need synchronize value but value is null
       if (force_reget || (NULL == value && is_remote_sync_need_value(type)))
       {
-        log_debug("@@ fr 1 %d %x %d", force_reget, value, is_remote_sync_need_value(type));
+        log_debug("@@ fr 1 %d %p %d", force_reget, value, is_remote_sync_need_value(type));
         need_reget = true;
         // need is_master to determines whether record can get from local_storage
         is_master = is_master_node(bucket_num, *key);
@@ -421,7 +438,8 @@ namespace tair
           if (TAIR_RETURN_SUCCESS == ret)
           {
             log_debug("@@ put op");
-            DO_REMOTE_SYNC_OP(TAIR_REMOTE_SYNC_TYPE_PUT, put(key->get_area(), *key, *value, 0, 0, false,
+            DO_REMOTE_SYNC_OP(TAIR_REMOTE_SYNC_TYPE_PUT, put(key->get_area(), *key, *value,
+                                                             value->data_meta.edate, value->data_meta.version, false,
                                                              &RemoteSyncManager::callback, arg));
           }
           else
@@ -445,7 +463,7 @@ namespace tair
         for (CLUSTER_HANDLER_MAP::iterator it = remote_cluster_handlers_.begin();
              it != remote_cluster_handlers_.end(); ++it)
         {
-          fail_records.push_back(FailRecord(key, it->second->info(), ret));
+          fail_records.push_back(FailRecord(key, it->second->get_info(), ret));
         }
       }
     }
@@ -474,15 +492,11 @@ namespace tair
       // consider hidden data as normal.
       ret = local_cluster_handler_.client()->get_hidden(key->get_area(), *key, value);
     }
-    
+
     // wrap some return code
     if (ret == TAIR_RETURN_HIDDEN)
     {
       ret = TAIR_RETURN_SUCCESS;
-    }
-    else if (ret == TAIR_RETURN_DATA_EXPIRED)
-    {
-      ret = TAIR_RETURN_DATA_NOT_EXIST;
     }
 
     return ret;
@@ -612,7 +626,7 @@ namespace tair
           }
           else
           {
-            remote_cluster_handlers_[handler->info()] = handler;
+            remote_cluster_handlers_[handler->get_info()] = handler;
             if (min_queue_limit <= 0 || handler->get_queue_limit() < min_queue_limit)
             {
               min_queue_limit = handler->get_queue_limit();
@@ -710,7 +724,7 @@ namespace tair
     case TAIR_REMOTE_SYNC_TYPE_DELETE:
       // not exist or expired also OK
       failed = (ret != TAIR_RETURN_SUCCESS && ret != TAIR_RETURN_DATA_NOT_EXIST &&
-                ret != TAIR_RETURN_DATA_EXPIRED && ret != TAIR_RETURN_MTIME_EARLY);
+                ret != TAIR_RETURN_MTIME_EARLY);
       break;
     default:
       log_error("unknown callback type: %d, ret: %d", callback_arg->type_, ret);
@@ -721,7 +735,7 @@ namespace tair
 
     if (failed)
     {
-      FailRecord record(callback_arg->key_->entry(), callback_arg->handler_->info(), ret);
+      FailRecord record(callback_arg->key_->entry(), callback_arg->handler_->get_info(), ret);
       ret = RemoteSyncManager::log_fail_record(callback_arg->fail_logger_, callback_arg->type_, record);
       if (ret != TAIR_RETURN_SUCCESS)
       {

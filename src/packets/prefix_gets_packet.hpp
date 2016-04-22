@@ -5,7 +5,7 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  *
- * get packet
+ * prefix gets
  *
  * Version: $Id: prefix_gets_packet.hpp 392 2011-12-06 02:02:41Z ganyu.hfl@taobao.com $
  *
@@ -26,6 +26,10 @@ namespace tair {
     }
     request_prefix_gets(request_prefix_gets &rhs) : request_get(rhs) {
       setPCode(TAIR_REQ_PREFIX_GETS_PACKET);
+    }
+
+    virtual base_packet::Type get_type() {
+      return base_packet::REQ_READ;
     }
   };
 
@@ -63,7 +67,15 @@ namespace tair {
       }
     }
 
-    bool encode(tbnet::DataBuffer *output) {
+    virtual base_packet::Type get_type() {
+      return base_packet::RESP_COMMON;
+    }
+
+    bool encode(DataBuffer *output) {
+      if (pkey == NULL) {
+        return false;
+      }
+
       output->writeInt32(config_version);
       output->writeInt32(code);
       pkey->encode(output);
@@ -90,7 +102,7 @@ namespace tair {
       return true;
     }
 
-    bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) {
+    bool decode(DataBuffer *input, PacketHeader *header) {
       if (header->_dataLen < 17) {
         return false;
       }
@@ -101,6 +113,7 @@ namespace tair {
       nsuccess = input->readInt32();
       if (nsuccess > 0) {
         key_value_map = new tair_keyvalue_map;
+        extra_code_map = new key_code_map_t;
         for (uint32_t i = 0; i < nsuccess; ++i) {
           data_entry *key = new data_entry;
           key->decode(input);
@@ -124,7 +137,7 @@ namespace tair {
       return true;
     }
 
-    void set_code(int code) {
+    virtual void set_code(int code) {
       this->code = code;
     }
 
@@ -187,9 +200,57 @@ namespace tair {
       ++nfailed;
     }
 
+    virtual size_t size() const
+    {
+      if (UNLIKELY(getDataLen() != 0))
+        return getDataLen() + 16;
+
+      size_t sz = 4 + 4;
+      if (pkey != NULL)
+        sz += pkey->encoded_size();
+
+      sz += 4;
+      if (key_value_map != NULL)
+      {
+        tair_keyvalue_map::const_iterator itr = key_value_map->begin();
+        while (itr != key_value_map->end())
+        {
+          sz += itr->first->encoded_size() + itr->second->encoded_size();
+          sz += 4;
+          ++itr;
+        }
+      }
+
+      sz += 4;
+      if (key_code_map != NULL) {
+        key_code_map_t::const_iterator itr = key_code_map->begin();
+        while (itr != key_code_map->end())
+        {
+          sz += itr->first->encoded_size() + 4;
+          ++itr;
+        }
+      }
+
+      if (extra_code_map != NULL)
+      {
+        key_code_map_t::const_iterator itr = extra_code_map->begin();
+        while (itr != extra_code_map->end())
+        {
+          sz += itr->first->encoded_size() + 4;
+          ++itr;
+        }
+      }
+      return sz + 16; //header 16 bytes
+    }
+
+    virtual bool failed() const
+    {
+      return code != TAIR_RETURN_SUCCESS;
+    }
+
   public:
     typedef __gnu_cxx::hash_map<data_entry*, int,
-            data_entry_hash, data_entry_equal_to> key_code_map_t;
+            tair::common::data_entry_hash, tair::common::data_entry_equal_to> key_code_map_t;
     uint32_t config_version;
     int code;
     uint32_t nsuccess;

@@ -15,6 +15,7 @@
  *
  */
 #include "data_entry.hpp"
+#include "databuffer.hpp"
 
 #ifdef WITH_COMPRESS
 #include "compressor.hpp"
@@ -24,11 +25,9 @@ int tair::common::data_entry::compress_type = TAIR_SNAPPY_COMPRESS;
 int tair::common::data_entry::compress_threshold = TAIR_DEFAULT_COMPRESS_THRESHOLD;
 #endif
 
-namespace tair
-{
-  namespace common {
+namespace tair { namespace common {
 #ifdef WITH_COMPRESS
-    void data_entry::do_compress(tbnet::DataBuffer *output) const
+    void data_entry::do_compress(DataBuffer *output) const
     {
       int new_size = size;
       char *new_data = get_data();
@@ -95,8 +94,7 @@ namespace tair
           int tmp_size = size - TAIR_VALUE_HEADER_LENGTH;
           char *tmp_data = new char[tmp_size];
           memcpy(tmp_data, data + TAIR_VALUE_HEADER_LENGTH, tmp_size);
-          free_data();
-          set_data(tmp_data, tmp_size, false);
+          set_alloced_data(tmp_data, tmp_size);
         } else {
           log_debug("compressed data with header: %d", compress_header);
           // do the real compress
@@ -106,8 +104,7 @@ namespace tair
           int compress_ret = compressor::do_decompress(&dest, &dest_len, data + TAIR_VALUE_HEADER_LENGTH, src_len, type);
           // to check if the dest_len overflow
           if (0 == compress_ret) {
-            free_data();
-            set_data(dest, dest_len, false);
+            set_alloced_data(dest, dest_len);
             log_debug("decompress ok, len is %d", dest_len);
           } else {
             ret = false;
@@ -121,5 +118,119 @@ namespace tair
       return ret;
     }
 #endif
+
+void data_entry:: encode(DataBuffer *output, bool need_compress) const
+{
+  output->writeInt8(has_merged);
+  output->writeInt32(area);
+  output->writeInt16(server_flag);
+
+#ifdef WITH_COMPRESS
+  if (need_compress) {
+    do_compress(output);
+  } else
+#else
+    UNUSED(need_compress);
+#endif
+  {
+    data_meta.encode(output);
+    uint32_t msize = (size | (prefix_size << PREFIX_KEY_OFFSET));
+    output->writeInt32(msize);
+    if (get_size() > 0) {
+      output->writeBytes(get_data(), get_size());
+    }
   }
 }
+
+bool data_entry::decode(DataBuffer *input, bool need_decompress)
+{
+  free_data();
+
+  uint8_t temp_merged = 0;
+  if (input->readInt8(&temp_merged) == false) {
+    return false;
+  }
+
+  int32_t _area = 0;
+  if (input->readInt32(&_area) == false) {
+    return false;
+  }
+  if (_area < 0 || _area >= TAIR_MAX_AREA_COUNT) return false;
+
+  uint16_t flag = 0;
+  if (input->readInt16(&flag) == false) {
+    return false;
+  }
+
+  // data_entry meta info:
+  // magic       int16     2B
+  // checksum    int16     2B
+  // keysize     int16     2B
+  // version     int16     2B
+  // prefixsize  int32     4B
+  // valsize     int32     4B
+  // flag        int8      1B
+  // cdate       int32     4B
+  // mdate       int32     4B
+  // edate       int32     4B
+  if (data_meta.decode(input) == false) {
+    return false;
+  }
+
+  uint32_t msize = 0;
+  if (input->readInt32(&msize) == false) {
+    return false;
+  }
+
+  size = (msize & PREFIX_KEY_MASK);
+  prefix_size = (msize >> PREFIX_KEY_OFFSET);
+  if (size < 0 || size > TAIR_MAX_DATA_SIZE || prefix_size < 0 ||
+      prefix_size > TAIR_MAX_KEY_SIZE || prefix_size > size) {
+    log_error("invalid data entry size: size(%d), prefix_size(%d)", size, prefix_size);
+    return false;
+  }
+  if (size > 0) {
+    if (size > TAIR_MAX_DATA_SIZE) {
+      log_error("data entry too large: 0x%x", size);
+      return false;
+    }
+    set_data(NULL, size, true, temp_merged);
+    if (input->readBytes(get_data(), size) == false) {
+      return false;
+    }
+  }
+
+  bool ret = true;
+#ifdef WITH_COMPRESS
+  if (need_decompress) {
+    ret = do_decompress();
+  }
+#else
+  UNUSED(need_decompress);
+#endif
+
+  has_merged = temp_merged;
+  area = _area;
+  server_flag = flag;
+
+  return ret;
+}
+
+void value_entry::encode(DataBuffer *output) const
+{
+  d_entry.encode(output);
+  output->writeInt16(version);
+  output->writeInt32(expire);
+}
+
+bool value_entry::decode(DataBuffer *input)
+{
+  if (!d_entry.decode(input)) return false;
+  if (!input->readInt16(&version)) return false;
+  if (!input->readInt32((uint32_t*)&expire)) return false;
+
+  return true;
+}
+
+
+}} // tair::common

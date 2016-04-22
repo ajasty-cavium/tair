@@ -7,7 +7,7 @@
  *
  * get packet
  *
- * Version: $Id$
+ * Version: $Id: get_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -30,7 +30,8 @@ namespace tair {
          key_list = NULL;
       }
 
-      request_get(request_get &packet)
+      request_get(const request_get &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_GET_PACKET);
          server_flag = packet.server_flag;
@@ -69,7 +70,42 @@ namespace tair {
          key_count = 0;
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_READ;
+      }
+
+      virtual const data_entry* pick_key() const
+      {
+        if (key_count == 0) {
+          return NULL;
+        }
+
+        if (key != NULL) {
+          return key;
+        }
+        if (key_list != NULL) {
+          return *key_list->begin();
+        }
+
+        return NULL;
+      }
+
+      virtual void dump() const
+      {
+        char ascii_key[72];
+        ascii_key[0] = '\0';
+        const data_entry *picked = pick_key();
+        if (picked != NULL) {
+          pick_key()->to_ascii(ascii_key, sizeof(ascii_key));
+        }
+        fprintf(stderr,
+            "op: %s(%d)\n\t"
+            "area: %d, key_count: %d, packet_size: %lu, server_flag:%d\n\t"
+            "key: %s\n",
+            name(getPCode()), getPCode(), area, key_count, size(), server_flag, ascii_key);
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt8(server_flag);
          output->writeInt16(area);
@@ -87,32 +123,70 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
-         if (header->_dataLen < 7) {
-            log_warn( "buffer data too few.");
+         //  int8   server_flag   1B     (must)
+         //  int16  area          2B     (must)
+         //  int32  key_count     4B     (must)
+         //  ------------------------
+         //  total                7B
+         if (input->readInt8(&server_flag) == false ||
+             input->readInt16(&area) == false ||
+             input->readInt32(&key_count) == false) {
+            log_warn("buffer data too few, buffer length %d", header->_dataLen);
             return false;
          }
-         server_flag = input->readInt8();
-         area = input->readInt16();
-         key_count = input->readInt32();
+
+#if TAIR_MAX_AREA_COUNT < 65536
+         if (area >= TAIR_MAX_AREA_COUNT) {
+            log_warn("area overflow: "
+               "server_flag %x, area %d, key_count %d",
+               server_flag, area, key_count);
+            return false;
+         }
+#endif
+
+         if (key_count > TAIR_MAX_KEY_COUNT) {
+           log_warn("too large key_count, "
+               "server_flag: %x, area: %d, key_count: %d",
+               server_flag, area, key_count);
+           return false;
+         }
+
+         if (key_count > 500) {
+           log_warn("such large key_count, "
+               "server_flag: %x, area: %d, key_count: %d",
+               server_flag, area, key_count);
+         }
+
          if (key_count == 1) {
             key = new data_entry();
-            if(!key->decode(input)) return false;
+            if(!key->decode(input)) {
+              log_warn("key decode failed: "
+                  "server_flag %x, area %d, key_count %d",
+                  server_flag, area, key_count);
+              return false;
+            }
          } else if (key_count > 1) {
-
             key_list = new tair_dataentry_set();
             pair<tair_dataentry_set::iterator,bool> ret;
-            for (uint32_t i=0; i<key_count; i++) {
+            for (uint32_t i = 0; i < key_count; i++) {
                data_entry *pair = new data_entry();
-               pair->decode(input);
+               if (!pair->decode(input)) {
+                 delete pair;
+
+                 log_warn("key decode failed: "
+                     "server_flag %x, area %d, key_count %d, index %u",
+                     server_flag, area, key_count, i);
+                 return false;
+               }
                ret = key_list->insert(pair);
                if (!ret.second) {
                   delete pair;
                }
             }
             if (key_count != key_list->size()) {
-              log_warn("duplicate key received, omitted");
+              log_info("duplicate key received, omitted");
               key_count = key_list->size();
             }
          }
@@ -146,26 +220,26 @@ namespace tair {
          }
       }
 
-      virtual size_t size() 
+      virtual size_t size() const
       {
-        if (fixed_size != 0)
-          return fixed_size;
+        if (LIKELY(getDataLen() != 0))
+          return getDataLen() + 16; // header 16 bytes
 
         size_t total = 1 + 2 + 4;
         if (key_count > 0) {
           if (key_list == NULL) {
-            total += key->encoded_size(); 
+            total += key->encoded_size();
           } else {
-            for (tair_dataentry_set::iterator it = key_list->begin(); 
+            for (tair_dataentry_set::iterator it = key_list->begin();
                 it != key_list->end(); ++it) {
               total += (*it)->encoded_size();
             }
           }
         }
-        return total + 16; // tbnet header 16 bytes
+        return total + 16; // header 16 bytes
       }
 
-      virtual uint16_t ns()
+      uint16_t ns() const
       {
         return area;
       }
@@ -184,8 +258,13 @@ namespace tair {
             key_list->insert(this->key);
             this->key = NULL;
           }
-          key_list->insert(key);
-          ++key_count;
+          pair<tair_dataentry_set::iterator, bool> ret;
+          ret = key_list->insert(key);
+          if (ret.second) {
+            key_count ++;
+          } else {
+            delete key;
+          }
         }
       }
 
@@ -217,6 +296,7 @@ namespace tair {
       tair_dataentry_set *key_list;
 
    };
+
    class response_get : public base_packet {
    public:
 
@@ -231,7 +311,6 @@ namespace tair {
          proxyed_key_list = NULL;
          code = 0;
       }
-
 
       ~response_get()
         {
@@ -270,7 +349,11 @@ namespace tair {
          }
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+         return base_packet::RESP_COMMON;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(config_version);
          output->writeInt32(code);
@@ -282,7 +365,6 @@ namespace tair {
                data_entry *data = it->second;
                key->encode(output);
                data->encode(output);
-
             }
             int pkc = 0;
             if (proxyed_key_list != NULL)
@@ -302,7 +384,7 @@ namespace tair {
          return true;
       }
 
-      void set_code(int code)
+      virtual void set_code(int code)
       {
          this->code = code;
       }
@@ -312,14 +394,12 @@ namespace tair {
          return code;
       }
 
-
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 8) {
             log_warn( "buffer data too few.");
             return false;
          }
-         fixed_size = header->_dataLen;
          config_version = input->readInt32();
          code = input->readInt32();
          key_count = input->readInt32();
@@ -397,22 +477,30 @@ namespace tair {
          if (ret.second == false)
             delete p;
       }
- 
-      virtual size_t size()
+
+      virtual size_t size() const
       {
+        if (UNLIKELY(getDataLen() != 0))
+          return getDataLen() + 16;
+
         size_t total = 4 + 4 + 4;
         if (key_count > 0) {
           if (key_data_map == NULL) {
-            // key or val never be null 
-            total += key->encoded_size() + data->encoded_size(); 
+            // key or val never be null
+            total += key->encoded_size() + data->encoded_size();
           } else {
-            for (tair_keyvalue_map::iterator it=key_data_map->begin(); 
+            for (tair_keyvalue_map::iterator it=key_data_map->begin();
                 it!=key_data_map->end(); ++it) {
               total += it->first->encoded_size() + it->second->encoded_size();
             }
           }
         }
-        return total + 16; // tbnet header;
+        return total + 16; // header;
+      }
+
+      virtual bool failed() const
+      {
+        return code != TAIR_RETURN_SUCCESS;
       }
 
    public:

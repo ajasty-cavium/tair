@@ -7,7 +7,7 @@
  *
  * this packet is for query migrating dataservers currently
  *
- * Version: $Id$
+ * Version: $Id: get_migrate_machine.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -35,13 +35,17 @@ namespace tair {
       {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_SPECIAL;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt64(server_id);
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 8) {
             log_warn("buffer data too few.");
@@ -56,6 +60,7 @@ namespace tair {
    private:
       request_get_migrate_machine(const request_get_migrate_machine&);
    };
+
    class response_get_migrate_machine : public base_packet {
    public:
       response_get_migrate_machine()
@@ -67,8 +72,11 @@ namespace tair {
       {
       }
 
+      virtual base_packet::Type get_type() {
+         return base_packet::RESP_COMMON;
+      }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(vec_ms.size());
          for (size_t i = 0; i < vec_ms.size(); ++i) {
@@ -78,8 +86,7 @@ namespace tair {
          return true;
       }
 
-
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 4) {
             log_warn("buffer data too few.");

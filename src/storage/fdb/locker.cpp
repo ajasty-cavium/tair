@@ -7,7 +7,7 @@
  *
  * lock array support
  *
- * Version: $Id$
+ * Version: $Id: locker.cpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>

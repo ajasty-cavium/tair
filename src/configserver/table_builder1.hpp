@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: table_builder1.hpp 213 2011-08-24 06:54:25Z zongdai@taobao.com $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>

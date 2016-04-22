@@ -7,7 +7,7 @@
  *
  * this packet is for counter operations
  *
- * Version: $Id$
+ * Version: $Id: inc_dec_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -33,6 +33,7 @@ namespace tair {
       }
 
       request_inc_dec(request_inc_dec &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_INCDEC_PACKET);
          server_flag = packet.server_flag;
@@ -47,8 +48,11 @@ namespace tair {
       {
       }
 
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_WRITE;
+      }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          output->writeInt8(server_flag);
          output->writeInt16(area);
@@ -60,21 +64,56 @@ namespace tair {
          return true;
       }
 
-
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) 
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
-         if (header->_dataLen < 13) {
-            log_warn( "buffer data too few.");
+         //  int8   server_flag    1B        (must)
+         //  int16  area           2B        (must)
+         //  int32  add_count      4B        (must)
+         //  int32  init_value     4B        (must)
+         //  int32  expire         4B        (must)
+         //  -------------------------
+         //  total                15B
+         if (input->readInt8(&server_flag) == false ||
+             input->readInt16(&area) == false ||
+             input->readInt32((uint32_t *)&add_count) == false ||
+             input->readInt32((uint32_t *)&init_value) == false ||
+             input->readInt32((uint32_t *)&expired) == false) {
+           log_warn("buffer data too few, buffer length %d", header->_dataLen);
+           return false;
+         }
+
+#if TAIR_MAX_AREA_COUNT < 65536
+         if (area >= TAIR_MAX_AREA_COUNT) {
+            log_warn("area overflow: "
+               "server_flag %x, area %d, add_count %d, init_value %d, expired %d",
+               server_flag, area, add_count, init_value, expired);
             return false;
          }
-         server_flag = input->readInt8();
-         area = input->readInt16();
-         add_count = input->readInt32();
-         init_value = input->readInt32();
-         expired = input->readInt32();
+#endif
 
-         key.decode(input);
+         if (!key.decode(input)) {
+            log_warn("key decode failed: "
+               "server_flag %x, area %d, add_count %d, init_value %d, expired %d",
+               server_flag, area, add_count, init_value, expired);
+            return false;
+         }
+
          return true;
+      }
+
+      virtual size_t size() const
+      {
+        if (LIKELY(getDataLen() != 0))
+          return getDataLen() + 16;
+
+        size_t total = 1 + 2 + 4 + 4 + 4;
+        total += key.encoded_size();
+        return total + 16; // header 16 bytes
+      }
+
+      uint16_t ns() const
+      {
+        return area;
       }
 
    public:
@@ -82,15 +121,15 @@ namespace tair {
       int32_t         add_count;
       int32_t         init_value;
       int32_t         expired;
-      data_entry    key;
-
+      data_entry      key;
+      int32_t         result_value;
    };
 
-   class response_inc_dec : public request_ping {
+   class response_inc_dec : public request_ping /* what the hell */ {
    public:
 
       response_inc_dec() : request_ping()
-     {
+      {
          setPCode(TAIR_RESP_INCDEC_PACKET);
       }
 
@@ -99,6 +138,20 @@ namespace tair {
       {
          setPCode(TAIR_RESP_INCDEC_PACKET);
       }
+
+      virtual base_packet::Type get_type() {
+         return base_packet::RESP_COMMON;
+      }
+
+      virtual size_t size() const
+      {
+         return 4 + 4 + 16; // header 16 bytes
+      }
+
+      virtual void set_code(int code)
+      {
+      }
+
    private:
       response_inc_dec(const response_inc_dec&);
    };

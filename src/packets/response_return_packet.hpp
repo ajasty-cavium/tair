@@ -7,7 +7,7 @@
  *
  * common response packet which only includes return code
  *
- * Version: $Id$
+ * Version: $Id: response_return_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -28,10 +28,10 @@ namespace tair {
          msg[0] = '\0';
       }
 
-      response_return(int chid, int code, const char *msg)
+      response_return(int chid, int code, const char *msg, uint32_t version = 0)
       {
          this->code = code;
-         config_version = 0;
+         config_version = version;
          if (msg != NULL) {
             snprintf(this->msg, 128, "%s", msg);
          }
@@ -43,7 +43,11 @@ namespace tair {
       {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+        return base_packet::RESP_COMMON;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(config_version);
          output->writeInt32(code);
@@ -51,7 +55,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) 
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < (int)(sizeof(int) * 3)) {
             log_warn( "buffer data too few.");
@@ -64,7 +68,7 @@ namespace tair {
          return true;
       }
 
-      void set_code(int code)
+      virtual void set_code(int code)
       {
          this->code = code;
       }
@@ -84,15 +88,23 @@ namespace tair {
          return msg;
       }
 
-      virtual size_t size()
+      virtual size_t size() const
       {
+        if (UNLIKELY(getDataLen() != 0))
+          return getDataLen() + 16;
+
         // config_version 4 byte
         // code 4 byte
         // msg len 4 byte
         // msg strlen(len)
         size_t len = strlen(msg);
         if (len > 0) len += 1;
-        return 12 + len; 
+        return 12 + len + 16;  //header 16 bytes
+      }
+
+      virtual bool failed() const
+      {
+        return code != TAIR_RETURN_SUCCESS;
       }
 
    public:

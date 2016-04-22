@@ -7,7 +7,7 @@
  *
  * remove packet
  *
- * Version: $Id$
+ * Version: $Id: remove_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -27,14 +27,17 @@ namespace tair {
          setPCode(TAIR_REQ_REMOVE_PACKET);
       }
 
-
-      request_remove(request_remove &packet) : request_get(packet)
+      request_remove(const request_remove &packet)
+        : request_get(packet)
       {
          setPCode(TAIR_REQ_REMOVE_PACKET);
       }
 
+      virtual base_packet::Type get_type() {
+        return base_packet::REQ_WRITE;
+      }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          return request_get::encode(output);
       }

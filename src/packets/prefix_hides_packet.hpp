@@ -30,7 +30,21 @@ namespace tair {
       setPCode(TAIR_REQ_PREFIX_HIDES_PACKET);
     }
 
-    bool encode(tbnet::DataBuffer *output) {
+    request_prefix_hides(const tair_dataentry_set &mkey_set, const int area) {
+      setPCode(TAIR_REQ_PREFIX_HIDES_PACKET);
+      tair_dataentry_set::const_iterator itr = mkey_set.begin();
+      while (itr != mkey_set.end()) {
+        this->add_key(*itr, true);
+        ++itr;
+      }
+      this->area = area;
+    }
+
+    virtual base_packet::Type get_type() {
+      return base_packet::REQ_WRITE;
+    }
+
+    bool encode(DataBuffer *output) {
       if (!request_hide::encode(output)) {
         return false;
       }
@@ -40,7 +54,7 @@ namespace tair {
       return true;
     }
 
-    bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) {
+    bool decode(DataBuffer *input, PacketHeader *header) {
       if (!request_hide::decode(input, header)) {
         return false;
       }
@@ -48,6 +62,17 @@ namespace tair {
         packet_id = input->readInt32();
       }
       return true;
+    }
+
+    virtual size_t size() const
+    {
+      if (LIKELY(getDataLen() != 0))
+        return getDataLen() + 16;
+
+      size_t total = request_hide::size();
+      if (server_flag != TAIR_SERVERFLAG_CLIENT)
+        total += 4;
+      return total; //header 16 bytes is added in request_hide::size()
     }
 
     void swap(request_prefix_hides &rhs) {

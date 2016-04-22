@@ -7,7 +7,7 @@
  *
  * file operations wrap calss
  *
- * Version: $Id$
+ * Version: $Id: file_op.hpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>

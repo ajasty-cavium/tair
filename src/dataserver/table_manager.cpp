@@ -7,7 +7,7 @@
  *
  * manager for route table pull from configserver impl
  *
- * Version: $Id$
+ * Version: $Id: table_manager.cpp 2985 2014-10-10 09:46:32Z yunhen $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -44,7 +44,7 @@ namespace tair {
      pthread_rwlock_destroy(&m_mutex);
    }
 
-   bool table_manager::is_master(int bucket_number, int server_flag) 
+   bool table_manager::is_master(int bucket_number, int server_flag)
    {
       tair::common::CScopedRwLock __scoped_lock(&m_mutex,false);
       assert (server_table != NULL);
@@ -54,15 +54,15 @@ namespace tair {
       return server_table[index] == local_server_ip::ip;
    }
 
-   void table_manager::do_update_table(uint64_t *new_table, size_t size, uint32_t table_version, uint32_t copy_count, uint32_t bucket_count)
+   void table_manager::do_update_table(uint64_t *new_table, size_t size, uint32_t table_version, uint32_t copy_count, uint32_t bucket_count, bool calc_migrate)
    {
       this->copy_count = copy_count;
       this->bucket_count = bucket_count;
       assert((size % get_hash_table_size()) == 0);
 #ifdef TAIR_DEBUG
-      log_debug("list a new table size = %d ", size);
+      log_debug("list a new table size = %lu ", size);
       for (size_t i = 0; i < size; ++i) {
-         log_debug("serverTable[%d] = %s", i, tbsys::CNetUtil::addrToString(new_table[i]).c_str() );
+         log_debug("serverTable[%lu] = %s", i, tbsys::CNetUtil::addrToString(new_table[i]).c_str() );
       }
 #endif
 
@@ -70,6 +70,7 @@ namespace tair {
       memcpy(temp_table, new_table, size * sizeof(uint64_t));
 
       tair::common::CScopedRwLock __scoped_lock(&m_mutex,true);
+      this->is_failover = (false == calc_migrate);
       uint64_t *old_table = server_table;
       server_table = temp_table;
       if (old_table != NULL) {
@@ -88,24 +89,14 @@ namespace tair {
       for (size_t i=0; i<get_hash_table_size(); i++) {
          available_server_ids.insert(new_table[i]);
          if (new_table[i] == local_server_ip::ip) {
-            log_debug("take bucket: %d", (i%this->bucket_count));
+            log_debug("take bucket: %lu", (i%this->bucket_count));
             temp_holding_buckets.push_back(i % this->bucket_count);
 
-            if (i < this->bucket_count && size > get_hash_table_size()) {
+            if (calc_migrate && i < this->bucket_count && size > get_hash_table_size()) {
                calculate_migrates(new_table, i);
-
             }
          }
       }
-#ifdef TAIR_DEBUG
-      log_debug("caculate migrate ok size = %d", migrates.size());
-      bucket_server_map_it it = migrates.begin();
-      for (; it != migrates.end() ; ++it) {
-         for(vector<uint64_t>::iterator it2 = it->second.begin(); it2 != it->second.end(); it2++) {
-            log_debug("bucket id:%d will migrate to server id %s ", it->first,tbsys::CNetUtil::addrToString(*it2).c_str());
-         }
-      }
-#endif
 
       if (size > get_hash_table_size()) {
          // have migrate table
@@ -116,7 +107,9 @@ namespace tair {
          }
       }
 
-      calculate_release_bucket(temp_holding_buckets);
+      if (calc_migrate) {
+        calculate_release_bucket(temp_holding_buckets);
+      }
 
       holding_buckets = temp_holding_buckets;
       this->table_version = table_version;
@@ -127,10 +120,76 @@ namespace tair {
 #endif
    }
 
-   vector<uint64_t> table_manager::get_slaves(int bucket_number, bool is_migrating) 
+   void table_manager::direct_update_table(uint64_t *tmp_table, uint32_t server_list_count, uint32_t copy_count, uint32_t bucket_count,
+                                           bool is_failover, bool version_changed, uint32_t table_version)
+   {
+     log_debug("enter %s", __func__);
+     if ((copy_count != this->copy_count) || (bucket_count != this->bucket_count)) {
+       log_error("copy_count or bucket_count confict, copy_count(old) is %d, (new) is %d; bucket_count(old) is %d, (new) is %d",
+                this->copy_count, copy_count, this->bucket_count, bucket_count);
+       return;
+     }
+
+     if (NULL == tmp_table || NULL == server_table) {
+       return;
+     }
+
+     tair::common::CScopedRwLock __scoped_lock(&m_mutex, true);
+     this->is_failover = is_failover;
+     memcpy(server_table, tmp_table, server_list_count * sizeof(uint64_t));
+     if (version_changed) {
+       this->table_version = table_version;
+     }
+   }
+
+   void table_manager::update_recoverys(std::vector<uint64_t> recovery_ds, bucket_server_map& recoverys)
+   {
+     tair::common::CScopedRwLock __scoped_lock(&m_mutex,false);
+
+     if (this->copy_count != 2) {
+       log_error("@ do recovery only when copy_count is two, check configuration...");
+       return;
+     }
+
+     // clear recoverys
+     recoverys.clear();
+
+     uint64_t* psource_table = server_table;
+     uint64_t* pdest_table = server_table + get_hash_table_size();
+     uint64_t failover_ds;
+
+     // scan the backup and get the recovery bucket
+     for (size_t j = 0; j < this->bucket_count; ++j)
+     {
+        if (psource_table[this->bucket_count + j] != 0)
+          continue;
+
+        if (psource_table[j] != local_server_ip::ip)
+          continue;
+
+        failover_ds = (psource_table[j] == pdest_table[j] ? pdest_table[this->bucket_count + j] : pdest_table[j]);
+        if (failover_ds == local_server_ip::ip) {
+          log_debug("i am the failover_ds, escape...");
+          continue;
+        }
+
+        // check if recovery ds contains failover_ds
+        if (find(recovery_ds.begin(), recovery_ds.end(), failover_ds) != recovery_ds.end()) {
+          // add to recoverys
+          recoverys[j].dest_servers.push_back(failover_ds);
+          log_debug("bucket %lu will be recovery to %s", j, tbsys::CNetUtil::addrToString(failover_ds).c_str());
+        } else {
+          log_debug("%s is a failover ds, but no in recovery ds", tbsys::CNetUtil::addrToString(failover_ds).c_str());
+        }
+     }
+   }
+
+   vector<uint64_t> table_manager::get_slaves(int bucket_number, bool is_migrating, bool& is_failover)
    {
       tair::common::CScopedRwLock __scoped_lock(&m_mutex,false);
       assert (server_table != NULL);
+
+      is_failover = this->is_failover;
 
       vector<uint64_t> slaves;
 
@@ -159,7 +218,7 @@ namespace tair {
       return slaves;
    }
 
-   uint64_t table_manager::get_migrate_target(int bucket_number) 
+   uint64_t table_manager::get_migrate_target(int bucket_number)
    {
       tair::common::CScopedRwLock __scoped_lock(&m_mutex,false);
       assert (server_table != NULL);
@@ -182,12 +241,20 @@ namespace tair {
    {
       uint64_t* psource_table = table;
       uint64_t* pdest_table = table + get_hash_table_size();
+
+      // get the score of this bucket, less copy, higher score
+      int score = 0;
+      for (size_t i = 0; i < this->copy_count; ++i) {
+        if (psource_table[index + this->bucket_count * i] == 0)
+          score++;
+      }
+
       for (size_t i = 0; i < this->copy_count; ++i) {
 
          bool need_migrate = true;
          uint64_t dest_dataserver = pdest_table[index + this->bucket_count * i];
 
-         for (size_t j =0; j < this->copy_count; ++j) 
+         for (size_t j =0; j < this->copy_count; ++j)
          {
             if (dest_dataserver == psource_table[index + this->bucket_count * j]) {
                need_migrate = false;
@@ -197,22 +264,25 @@ namespace tair {
 
          if (need_migrate) {
             log_debug("add migrate item: bucket[%d] => %s", index, tbsys::CNetUtil::addrToString(dest_dataserver).c_str());
-            migrates[index].push_back(dest_dataserver);
+            migrates[index].dest_servers.push_back(dest_dataserver);
+            migrates[index].score = score;
+            migrates[index].bucket= index;
          }
       }
       bucket_server_map_it it = migrates.find(index);
-      if (it == migrates.end()) 
+      if (it == migrates.end())
       {
-         if (psource_table[index] != pdest_table[index]) 
+         if (psource_table[index] != pdest_table[index])
          {
             //this will add a empty vector to migrates,
             //some times only need to change master for a bucket
-            migrates[index];
+            migrates[index].score = score;
+            migrates[index].bucket= index;
          }
       }
    }
 
-   void table_manager::init_migrate_done_set(boost::dynamic_bitset<> &migrate_done_set, const vector<uint64_t> &current_state_table)
+   void table_manager::init_migrate_done_set(tair::util::dynamic_bitset &migrate_done_set, const vector<uint64_t> &current_state_table)
    {
       tair::common::CScopedRwLock __scoped_lock(&m_mutex,false);
       int bucket_number = 0;
@@ -227,7 +297,7 @@ namespace tair {
          }
          if (has_migrated) {
             migrate_done_set.set(bucket_number, true);
-            log_debug("bucket[%d] has migrated");
+            log_debug("bucket[%d] has migrated", bucket_number);
          }
       }
    }
@@ -240,19 +310,35 @@ namespace tair {
    }
    **/
 
-   vector<int> table_manager::get_holding_buckets() const
+   const vector<int>& table_manager::get_holding_buckets() const
    {
       return holding_buckets;
    }
 
-   vector<int> table_manager::get_padding_buckets() const
+   const vector<int>& table_manager::get_padding_buckets() const
    {
       return padding_buckets;
    }
 
-   vector<int> table_manager::get_release_buckets() const
+   const vector<int>& table_manager::get_release_buckets() const
    {
       return release_buckets;
+   }
+
+   bool table_manager::bucket_is_held(int bucket)
+   {
+     vector<int>::const_iterator iter;
+     for (iter = holding_buckets.begin(); iter != holding_buckets.end(); iter++)
+     {
+       if (bucket == *iter)
+         return true;
+     }
+     for (iter = padding_buckets.begin(); iter != padding_buckets.end(); iter++)
+     {
+       if (bucket == *iter)
+         return true;
+     }
+     return false;
    }
 
    bucket_server_map table_manager::get_migrates() const

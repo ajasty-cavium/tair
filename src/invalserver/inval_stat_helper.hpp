@@ -1,5 +1,5 @@
 /*
- * (C) 2007-2010 Alibaba Group Holding Limited
+ * (C) 2007-2012 Alibaba Group Holding Limited
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -10,29 +10,27 @@
  * Version: $Id: inval_stat_helper.hpp 28 2012-08-17 05:18:09Z fengmao.pj@taobao.com $
  *
  * Authors:
- *   ruohai <ruohai@taobao.com>
- *     - initial release
+ *   fengmao <fengmao.pj@taobao.com>
  *
  */
 #ifndef INVAL_STAT_HELPER_H
 #define INVAL_STAT_HELPER_H
 
 #include <zlib.h>
-
-
 #include <vector>
 #include <string>
 
 #include <tbnet.h>
 #include "inval_stat.hpp"
+#include "inval_periodic_worker.hpp"
 namespace tair {
-#define TAIR_INVAL_STAT tair::inval_stat_helper::inval_stat_helper_instance
+#define TAIR_INVAL_STAT tair::InvalStatHelper::inval_stat_helper_instance
 
   class CThreadMutex;
-  class inval_stat_helper : public tbsys::CDefaultRunnable {
+  class InvalStatHelper : public PeriodicTask {
   public:
     //inval_stat_helper needs nessary parameters(group names) to start working.
-    //it will wait(sleep) until abaining the parameters.
+    //it will wait(sleep) until obaining the parameters.
     //the variable 'work_now' = WORK or WAIT.
     enum { WORK = 0, WAIT = 1 };
 
@@ -44,10 +42,10 @@ namespace tair {
     //operation's name ->{invalid,preifx_invalid,hide,prefix_hide}
     enum {INVALID = 0, PREFIX_INVALID = 1, HIDE = 2, PREFIX_HIDE = 3 };
 
-    inval_stat_helper();
-    ~inval_stat_helper();
+    InvalStatHelper();
+    ~InvalStatHelper();
 
-    void run(tbsys::CThread *thread, void *arg);
+    void runTimerTask();
 
     //get the compressed statistics data of the group(s).
     //it will allocate the needed memory,
@@ -63,16 +61,6 @@ namespace tair {
         const std::string& group_name,
         const uint32_t area,
         const uint32_t op_type);
-    //get group name
-    std::string get_group_name(const int index)
-    {
-      if (index < 0 || index >= (int)group_names.size()) {
-        return std::string("bad index");
-      }
-      else {
-        return group_names[index];
-      }
-    }
   private:
 
     // compress the statistics data
@@ -81,7 +69,7 @@ namespace tair {
     void reset();
   public:
     //glabol instance
-    static inval_stat_helper inval_stat_helper_instance;
+    static InvalStatHelper inval_stat_helper_instance;
   private:
     //<group_name, inval_group_stat*>
     typedef __gnu_cxx::hash_map<std::string, inval_group_stat*, tbsys::str_hash> group_stat_map_t;
@@ -90,7 +78,6 @@ namespace tair {
     inval_group_stat *stat;
     inval_group_stat *current_stat;
     uint32_t group_count;
-    std::vector<std::string> group_names;
 
     uint64_t last_update_time;
 
@@ -103,6 +90,8 @@ namespace tair {
     atomic_t need_compressed;
 
     tbsys::CThreadMutex mutex;
+
+    static const int STAT_HELPER_SLEEP_TIME = 10;
   }; //end of class
 } // end of namespace
 

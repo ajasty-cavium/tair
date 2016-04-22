@@ -327,6 +327,32 @@ namespace tair
     #error "must compiled on i386 or x86_64"
 
     #endif //
+    
+    inline void MemoryBarrier() {
+      // See http://gcc.gnu.org/ml/gcc/2003-04/msg01180.html for a discussion on
+      // this idiom. Also see http://en.wikipedia.org/wiki/Memory_ordering.
+      asm volatile("" : : : "memory");
+    }
+    
+    template <typename T>
+    class AtomicPointer {
+     private:
+      T* rep_;
+     public:
+      AtomicPointer() { }
+      explicit AtomicPointer(T* p) : rep_(p) {}
+      inline T* NoBarrier_Load() const { return rep_; }
+      inline void NoBarrier_Store(T* v) { rep_ = v; }
+      inline T* Acquire_Load() const {
+        T* result = rep_;
+        MemoryBarrier();
+        return result;
+      }
+      inline void Release_Store(T* v) {
+        MemoryBarrier();
+        rep_ = v;
+      }
+    };
   }
 }
 

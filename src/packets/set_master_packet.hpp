@@ -7,7 +7,7 @@
  *
  * this packet is for set one configserver as the master
  *
- * Version: $Id$
+ * Version: $Id: set_master_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -26,6 +26,11 @@ namespace tair {
          setPCode(TAIR_REQ_SETMASTER_PACKET);
       }
 
+      virtual base_packet::Type get_type() {
+        return base_packet::REQ_SPECIAL;
+      }
+   private:
+      request_set_master(const request_set_master&);
    };
 }
 #endif

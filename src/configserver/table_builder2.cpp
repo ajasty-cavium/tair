@@ -8,7 +8,7 @@
  * table_builder2.cpp is the implement of table build strategy which make the data safety
  * is the first priority
  *
- * Version: $Id$
+ * Version: $Id: table_builder2.cpp 1961 2013-11-20 09:57:21Z dutor $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -78,8 +78,7 @@ namespace tair {
       return NODE_OK;
     }
 
-    void table_builder2::set_available_server(const set <
-                                              node_info * >&ava_server)
+    void table_builder2::set_available_server(const node_info_set& ava_server)
     {
       available_server.clear();
       map<uint32_t, int>pos_count;
@@ -131,18 +130,18 @@ namespace tair {
         }
 
       }
-      int mtoken_per_node_min;
-      int mtoken_per_node_max_count;
-      int mtoken_per_node_min_count;
-      int otoken_per_node_min;
-      int otoken_per_node_max_count;
-      int otoken_per_node_min_count;
-      int mmaster_token_per_node_min;
-      int mmaster_token_per_node_max_count;
-      int mmaster_token_per_node_min_count;
-      int omaster_token_per_node_min;
-      int omaster_token_per_node_max_count;
-      int omaster_token_per_node_min_count;
+      int mtoken_per_node_min = 0;
+      int mtoken_per_node_max_count = 0;
+      int mtoken_per_node_min_count = 0;
+      int otoken_per_node_min = 0;
+      int otoken_per_node_max_count = 0;
+      int otoken_per_node_min_count = 0;
+      int mmaster_token_per_node_min = 0;
+      int mmaster_token_per_node_max_count = 0;
+      int mmaster_token_per_node_min_count = 0;
+      int omaster_token_per_node_min = 0;
+      int omaster_token_per_node_max_count = 0;
+      int omaster_token_per_node_min_count = 0;
 
 
       assert(build_stat_normal);

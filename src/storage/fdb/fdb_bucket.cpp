@@ -7,7 +7,7 @@
  *
  * fdb_bucket hold one bucket for fdb storage engine
  *
- * Version: $Id$
+ * Version: $Id: fdb_bucket.cpp 1579 2013-06-03 06:05:00Z dutor $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -145,12 +145,12 @@ namespace tair {
           PROFILER_BEGIN("new item");
           item_manager->new_item(item);
           PROFILER_END();
-          log_debug("this is a new item, meta_offset: %llu",
+          log_debug("this is a new item, meta_offset: %u",
                     item.meta_offset);
         }
 
         psize += (item.meta.size - total_size);        // when use freeblock, we need recalc padsize
-        log_debug("new padsize: %d, new size: %d, total size: %d", psize,
+        log_debug("new padsize: %d, new size: %"PRI64_PREFIX"d, total size: %d", psize,
                   item.meta.size, total_size);
 
         item.data.keysize = key.get_size();
@@ -216,7 +216,7 @@ namespace tair {
             int remRc = remove(key, false, false);
             PROFILER_END();
             log_debug("remove expire data return: %d", remRc);
-            rc = TAIR_RETURN_DATA_EXPIRED;
+            rc = TAIR_RETURN_DATA_NOT_EXIST;
           }
           else {
             key.data_meta = item.data;

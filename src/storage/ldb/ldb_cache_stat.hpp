@@ -7,7 +7,7 @@
  *
  * cache stat
  *
- * Version: $Id$
+ * Version: $Id: ldb_cache_stat.hpp 1961 2013-11-20 09:57:21Z dutor $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -30,7 +30,9 @@ namespace tair
     namespace ldb
     {
       typedef tair::mdb_area_stat cache_stat;
-      class tair::common::FileOperation;
+      namespace common {
+        class FileOperation;
+      }
 
 #define SET_LDB_STAT_BLOOM_GET_COUNT(stat, get_count) (stat)->space_usage |= static_cast<uint64_t>(get_count) << 38
 #define SET_LDB_STAT_BLOOM_MISS_COUNT(stat, miss_count) (stat)->quota |= static_cast<uint64_t>(miss_count) << 38

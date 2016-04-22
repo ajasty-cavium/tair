@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: mdb_stat.hpp 1623 2013-06-19 05:40:16Z dutor $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>
@@ -18,6 +18,14 @@
 namespace tair {
 
 #define TAIR_DIFF_VALUE(a,b) ((a>=b)?(a-b):(a))
+
+template <typename Type>
+static void _atomic_set(Type *ptr, Type val) {
+  Type tmp = *ptr;
+  while (!__sync_bool_compare_and_swap(ptr, tmp, val)) {
+    tmp = *ptr;
+  }   
+}
 
 #pragma pack(1)
   class tair_mdb_stat {
@@ -73,32 +81,72 @@ namespace tair {
     {
       if (size_care)
       {
-        quota += stat->quota;
-        data_size += stat->data_size;
-        space_usage += stat->space_usage;
-        item_count += stat->item_count;
+        incr_quota(stat->get_quota());
+        incr_data_size(stat->get_data_size());
+        incr_space_usage(stat->get_space_usage());
+        incr_item_count(stat->get_item_count());
       }
-      hit_count += stat->hit_count;
-      get_count += stat->get_count;
-      put_count += stat->put_count;
-      remove_count += stat->remove_count;
-      evict_count += stat->evict_count;
+      incr_hit_count(stat->get_hit_count());
+      incr_get_count(stat->get_get_count());
+      incr_put_count(stat->get_put_count());
+      incr_remove_count(stat->get_remove_count());
+      incr_evict_count(stat->get_evict_count());
     }
     void sub(mdb_area_stat* stat, bool size_care = false)
     {
       if (size_care)
       {
-        quota -= stat->quota;
-        data_size -= stat->data_size;
-        space_usage -= stat->space_usage;
-        item_count -= stat->item_count;
+        decr_quota(stat->get_quota());
+        decr_data_size(stat->get_data_size());
+        decr_space_usage(stat->get_space_usage());
+        decr_item_count(stat->get_item_count());
       }
-      hit_count -= stat->hit_count;
-      get_count -= stat->get_count;
-      put_count -= stat->put_count;
-      remove_count -= stat->remove_count;
-      evict_count -= stat->evict_count;
+      decr_hit_count(stat->get_hit_count());
+      decr_get_count(stat->get_get_count());
+      decr_put_count(stat->get_put_count());
+      decr_remove_count(stat->get_remove_count());
+      decr_evict_count(stat->get_evict_count());
     }
+
+    uint64_t get_quota() { return __sync_add_and_fetch(&quota, 0); }
+    uint64_t get_data_size() { return __sync_add_and_fetch(&data_size, 0); }
+    uint64_t get_space_usage() { return __sync_add_and_fetch(&space_usage, 0); }
+    uint64_t get_item_count() { return __sync_add_and_fetch(&item_count, 0); }
+    uint64_t get_hit_count() { return __sync_add_and_fetch(&hit_count, 0); }
+    uint64_t get_get_count() { return __sync_add_and_fetch(&get_count, 0); }
+    uint64_t get_put_count() { return __sync_add_and_fetch(&put_count, 0); }
+    uint64_t get_remove_count() { return __sync_add_and_fetch(&remove_count, 0); }
+    uint64_t get_evict_count() { return __sync_add_and_fetch(&evict_count, 0); }
+
+    void set_quota(uint64_t v) { (void) _atomic_set(&quota, v); }
+    void set_data_size(uint64_t v) { (void) _atomic_set(&data_size, v); }
+    void set_space_usage(uint64_t v) { (void) _atomic_set(&space_usage, v); }
+    void set_item_count(uint64_t v) { (void) _atomic_set(&item_count, v); }
+    void set_hit_count(uint64_t v) { (void) _atomic_set(&hit_count, v); }
+    void set_get_count(uint64_t v) { (void) _atomic_set(&get_count, v); }
+    void set_put_count(uint64_t v) { (void) _atomic_set(&put_count, v); }
+    void set_remove_count(uint64_t v) { (void) _atomic_set(&remove_count, v); }
+    void set_evict_count(uint64_t v) { (void) _atomic_set(&evict_count, v); }
+
+    void incr_quota(uint64_t v) { (void) __sync_add_and_fetch(&quota, v); }
+    void incr_data_size(uint64_t v) { (void) __sync_add_and_fetch(&data_size, v); }
+    void incr_space_usage(uint64_t v) { (void) __sync_add_and_fetch(&space_usage, v); }
+    void incr_item_count(uint64_t v = 1) { (void) __sync_add_and_fetch(&item_count, v); }
+    void decr_data_size(uint64_t v) { (void) __sync_sub_and_fetch(&data_size, v); }
+    void decr_quota(uint64_t v) { (void) __sync_sub_and_fetch(&quota, v); }
+    void decr_space_usage(uint64_t v) { (void) __sync_sub_and_fetch(&space_usage, v); }
+    void decr_item_count(uint64_t v = 1) { (void) __sync_sub_and_fetch(&item_count, v); }
+
+    void incr_hit_count(uint64_t v = 1) { (void) __sync_add_and_fetch(&hit_count, v); }
+    void incr_get_count(uint64_t v = 1) { (void) __sync_add_and_fetch(&get_count, v); }
+    void incr_put_count(uint64_t v = 1) { (void) __sync_add_and_fetch(&put_count, v); }
+    void incr_remove_count(uint64_t v = 1) { (void) __sync_add_and_fetch(&remove_count, v); }
+    void incr_evict_count(uint64_t v = 1) { (void) __sync_add_and_fetch(&evict_count, v); }
+    void decr_hit_count(uint64_t v = 1) { (void) __sync_sub_and_fetch(&hit_count, v); }
+    void decr_get_count(uint64_t v = 1) { (void) __sync_sub_and_fetch(&get_count, v); }
+    void decr_put_count(uint64_t v = 1) { (void) __sync_sub_and_fetch(&put_count, v); }
+    void decr_remove_count(uint64_t v = 1) { (void) __sync_sub_and_fetch(&remove_count, v); }
+    void decr_evict_count(uint64_t v = 1) { (void) __sync_sub_and_fetch(&evict_count, v); }
 
     uint64_t quota;
     uint64_t data_size;

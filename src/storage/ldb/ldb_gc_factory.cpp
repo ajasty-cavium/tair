@@ -7,7 +7,7 @@
  *
  * leveldb gc bucket or area
  *
- * Version: $Id$
+ * Version: $Id: ldb_gc_factory.cpp 1961 2013-11-20 09:57:21Z dutor $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -310,9 +310,8 @@ namespace tair
       }
 
 //////////////////////////////
-      LdbGcFactory::LdbGcFactory(LdbInstance* db) : db_(db), can_gc_(false)
+      LdbGcFactory::LdbGcFactory() : db_(NULL), can_gc_(false)
       {
-        assert(db_ != NULL);
         log_ = new GcLog();
       }
 
@@ -325,12 +324,14 @@ namespace tair
         }
       }
 
-      bool LdbGcFactory::start()
+      bool LdbGcFactory::start(LdbInstance* db)
       {
         tbsys::CWLockGuard guard(lock_);
+        db_ = db;
         bool ret = db_ != NULL && db_->db_path();
         if (!ret)
         {
+          db_ = NULL;
           log_error("start gc fail. db not init or db path not init");
         }
         else if (!(ret = log_->start(gc_log_name().c_str(), this)))
@@ -369,13 +370,18 @@ namespace tair
 
       void LdbGcFactory::pause_gc()
       {
-        log_error("pause gc");
+        log_warn("pause gc");
         can_gc_ = false;
       }
 
       void LdbGcFactory::resume_gc()
       {
-        log_error("resume gc");
+        if (!can_gc_)
+        {
+          // restart to new task round
+          db_->bg_task()->restart();
+        }
+        log_warn("resume gc");
         can_gc_ = true;
       }
 
@@ -435,6 +441,48 @@ namespace tair
         return ret;
       }
 
+      int LdbGcFactory::add(std::string& key_str, GcType type)
+      {
+        std::vector<char*> keys;
+        char key_list[key_str.size() + 1];
+        strncpy(key_list, key_str.c_str(), key_str.size() + 1);
+        tbsys::CStringUtil::split(key_list, ",", keys);
+        int ret = 0 ;
+        for (size_t i = 0; i < keys.size(); i++)
+        {
+          int key = atoi(keys.at(i));
+          ret = add(key, type);
+          log_warn("add gc key(%d), type(%d), ret(%d)", key, type, ret);
+          if (ret != TAIR_RETURN_SUCCESS)
+          {
+            log_error("add gc key(%d) failed, type(%d), ret(%d)", key, type, ret);
+            break;
+          }
+        }
+        return ret;
+      }
+
+      int LdbGcFactory::remove(std::string& key_str, GcType type)
+      {
+        std::vector<char*> keys;
+        char key_list[key_str.size() + 1];
+        strncpy(key_list, key_str.c_str(), key_str.size() + 1);
+        tbsys::CStringUtil::split(key_list, ",", keys);
+        int ret = 0 ;
+        for (size_t i = 0; i < keys.size(); i++)
+        {
+          int key = atoi(keys.at(i));
+          ret = remove(key, type);
+          log_warn("remove gc key(%d), type(%d) ret(%d)", key, type, ret);
+          if (ret != TAIR_RETURN_SUCCESS)
+          {
+            log_error("remove gc key(%d) failed, type(%d), ret(%d)", key, type, ret);
+            break;
+          }
+        }
+        return ret;
+      }
+
       int LdbGcFactory::add(const std::vector<int32_t>& keys, GcType type)
       {
         tbsys::CWLockGuard guard(lock_);
@@ -486,12 +534,12 @@ namespace tair
       void LdbGcFactory::try_evict()
       {
         tbsys::CWLockGuard guard(lock_);
-        log_info("before try gc evict. buckets: %d, areas: %d", gc_buckets_.size(), gc_areas_.size());
+        log_info("before try gc evict. buckets: %zu, areas: %zu", gc_buckets_.size(), gc_areas_.size());
         if (!empty())
         {
           uint64_t current_db_smallest_file_number = 0;
           get_db_stat(db_->db(), current_db_smallest_file_number, "smallest-filenumber");
-          log_info("try evict gc. buckets: %d, area: %d, db smallest filenumber: %"PRI64_PREFIX"u",
+          log_info("try evict gc. buckets: %zu, area: %zu, db smallest filenumber: %"PRI64_PREFIX"u",
                    gc_buckets_.size(), gc_areas_.size(), current_db_smallest_file_number);
           try_evict(gc_buckets_, GC_BUCKET, current_db_smallest_file_number);
           try_evict(gc_areas_, GC_AREA, current_db_smallest_file_number);
@@ -500,7 +548,7 @@ namespace tair
             rotate_log();
           }
         }
-        log_info("after try gc evict. buckets: %d, areas: %d", gc_buckets_.size(), gc_areas_.size());
+        log_info("after try gc evict. buckets: %zu, areas: %zu", gc_buckets_.size(), gc_areas_.size());
 
       }
 
@@ -551,7 +599,7 @@ namespace tair
 
       void LdbGcFactory::debug_string()
       {
-        log_info("== debug gc factory info, gc buckets size: %d, gc areas size: %d ==",
+        log_info("== debug gc factory info, gc buckets size: %zu, gc areas size: %zu ==",
                  gc_buckets_.size(), gc_areas_.size());
         for (GC_MAP_CONST_ITER it = gc_buckets_.begin(); it != gc_buckets_.end(); ++it)
         {
@@ -566,11 +614,7 @@ namespace tair
       void LdbGcFactory::set_gc_info(GcNode& node)
       {
         get_db_stat(db_->db(), node.sequence_, "sequence");
-        // @@ TEMPORARILY CHANGE FOR SAFE @@
-        // 'cause leveldb's compaction may NOT gc keys, so filenumber is not considered here.
-        node.file_number_ = ~0UL;
-        // get_db_stat(db_->db(), node.file_number_, "largest-filenumber");
-        // @@ TEMPORARILY CHANGE FOR SAFE @@
+        get_db_stat(db_->db(), node.file_number_, "largest-filenumber");
         node.when_ = time(NULL);
       }
 
@@ -721,7 +765,7 @@ namespace tair
             if (!empty())
             {
               int32_t size = GC_LOG_RECORD_SIZE * (gc_buckets_.size() + gc_areas_.size());
-              log_info("rotate gc log all record. buckets size: %d; areas size: %d, dumpbuffer size: %d",
+              log_info("rotate gc log all record. buckets size: %zu; areas size: %zu, dumpbuffer size: %d",
                        gc_buckets_.size(), gc_areas_.size(), size);
               char* buf = new char[size];
 
@@ -740,7 +784,6 @@ namespace tair
 
           if (TAIR_RETURN_SUCCESS == ret)
           {
-            log_->destroy();
             delete log_;
             log_ = new_log;
             log_info("rotate new gc log succuess");
@@ -770,8 +813,12 @@ namespace tair
 
       std::string LdbGcFactory::gc_log_rotate_name()
       {
-        return db_ != NULL ? std::string(db_->db_path()) + "/ldb_gc_factory.log.tmp" : std::string();
+        char time_str[16];
+        memset(time_str, 0x0, sizeof(time_str));
+        tbsys::CTimeUtil::timeToStr(time(NULL), time_str);
+        return db_ != NULL ? std::string(db_->db_path()) + "/ldb_gc_factory.log.tmp." + time_str : std::string();
       }
+
     }
   }
 }

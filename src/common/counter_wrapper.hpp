@@ -14,7 +14,7 @@
  */
 #ifndef TAIR_COUNTER_WRAPPER_HPP
 #define TAIR_COUNTER_WRAPPER_HPP
-#include "tbnet.h"
+#include "databuffer.hpp"
 
 namespace tair {
   namespace common {
@@ -34,18 +34,24 @@ namespace tair {
         return *this;
       }
 
-      bool encode(tbnet::DataBuffer *output) const {
+      bool encode(DataBuffer *output) const {
         output->writeInt32(count);
         output->writeInt32(init_value);
         output->writeInt32(expire);
         return true;
       }
 
-      bool decode(tbnet::DataBuffer *input) {
-        count = input->readInt32();
-        init_value = input->readInt32();
-        expire = input->readInt32();
+      bool decode(DataBuffer *input) {
+        if (!input->readInt32((uint32_t*)&count)) return false;
+        if (!input->readInt32((uint32_t*)&init_value)) return false;
+        if (!input->readInt32((uint32_t*)&expire)) return false;
+
         return true;
+      }
+
+      size_t encoded_size()
+      {
+         return 4 + 4 + 4;
       }
 
       int32_t       count;

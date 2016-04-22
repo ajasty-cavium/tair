@@ -7,7 +7,7 @@
  *
  * this packet is for dataserver to tell configserver on bucket is migrated successsfully
  *
- * Version: $Id$
+ * Version: $Id: migrate_finish_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -21,7 +21,7 @@ namespace tair {
    class request_migrate_finish : public base_packet {
    public:
 
-      request_migrate_finish() 
+      request_migrate_finish()
       {
          setPCode(TAIR_REQ_MIG_FINISH_PACKET);
          server_id = 0;
@@ -29,8 +29,8 @@ namespace tair {
          version = 0;
       }
 
-
       request_migrate_finish(request_migrate_finish &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_MIG_FINISH_PACKET);
          version = packet.version;
@@ -38,13 +38,15 @@ namespace tair {
          bucket_no = packet.bucket_no;
       }
 
-
       ~request_migrate_finish()
       {
       }
 
+      virtual base_packet::Type get_type() {
+        return base_packet::REQ_SPECIAL;
+      }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(version);
          output->writeInt64(server_id);
@@ -52,7 +54,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 8) {
             log_warn( "buffer data too few.");

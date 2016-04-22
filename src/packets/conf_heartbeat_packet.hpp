@@ -7,7 +7,7 @@
  *
  * heartbeat packet between configservers
  *
- * Version: $Id$
+ * Version: $Id: conf_heartbeat_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -28,7 +28,8 @@ namespace tair {
          loop_count = 0U;
       }
 
-      request_conf_heartbeart(request_conf_heartbeart &packet)
+      request_conf_heartbeart(const request_conf_heartbeart &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_CONFHB_PACKET);
          server_id = packet.server_id;
@@ -38,14 +39,14 @@ namespace tair {
       ~request_conf_heartbeart() {
       }
 
-      bool encode(tbnet::DataBuffer *output) {
+      bool encode(DataBuffer *output) {
          output->writeInt64(server_id);
          output->writeInt32(loop_count);
 
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 12) {
             log_warn("buffer data too few");
@@ -56,6 +57,11 @@ namespace tair {
 
          return true;
       }
+
+      virtual base_packet::Type get_type() {
+        return base_packet::REQ_SPECIAL;
+      }
+
    public:
       uint64_t server_id;
       uint32_t loop_count;

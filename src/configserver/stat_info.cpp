@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: stat_info.cpp 1579 2013-06-03 06:05:00Z dutor $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -15,7 +15,7 @@
 #include "stat_info.hpp"
 
 namespace {
-  char *format_str[] = {
+  const char *format_str[] = {
     "unknow",
     "getCount",
     "putCount",
@@ -74,7 +74,7 @@ namespace tair {
           m_k_v[key] = value;
       }
     }
-    void stat_info_detail::encode(tbnet::DataBuffer * output) const
+    void stat_info_detail::encode(DataBuffer * output) const
     {
       output->writeInt32(data_holder.size());
       for(uint i = 0; i < data_holder.size(); i++)
@@ -83,7 +83,7 @@ namespace tair {
       }
 
     }
-    void stat_info_detail::decode(tbnet::DataBuffer * input)
+    void stat_info_detail::decode(DataBuffer * input)
     {
       data_holder.clear();
       uint32_t size = input->readInt32();
@@ -107,7 +107,7 @@ namespace tair {
       }
       last_update_time = rv.last_update_time;
     }
-    void node_stat_info::encode(tbnet::DataBuffer * output) const
+    void node_stat_info::encode(DataBuffer * output) const
     {
       output->writeInt32(data_holder.size());
       for(std::map<uint32_t, stat_info_detail>::const_iterator it =
@@ -118,7 +118,7 @@ namespace tair {
       }
 
     }
-    void node_stat_info::decode(tbnet::DataBuffer * input)
+    void node_stat_info::decode(DataBuffer * input)
     {
       data_holder.clear();
       uint32_t size = input->readInt32();

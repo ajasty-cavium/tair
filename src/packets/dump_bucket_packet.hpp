@@ -5,9 +5,9 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  *
- * this packet is for dump a particular bucket 
+ * this packet is for dump a particular bucket
  *
- * Version: $Id$
+ * Version: $Id: dump_bucket_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -27,7 +27,8 @@ namespace tair {
          path[0] = '\0';
       }
 
-      request_dump_bucket(request_dump_bucket &packet)
+      request_dump_bucket(const request_dump_bucket &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_DUMP_BUCKET_PACKET);
          dbid = packet.dbid;
@@ -38,14 +39,14 @@ namespace tair {
       {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(dbid);
          output->writeString(path);
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 8) {
             log_warn("buffer data too few.");
@@ -55,6 +56,10 @@ namespace tair {
          char *p = &path[0];
          input->readString(p, TAIR_MAX_FILENAME_LEN - 1);
          return true;
+      }
+
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_READ;
       }
 
       void set_path(const char *path_str)

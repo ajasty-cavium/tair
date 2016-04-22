@@ -25,6 +25,7 @@ namespace tair {
       }
 
       request_get_range(request_get_range &packet)
+        : base_packet(packet)
       {
         setPCode(TAIR_REQ_GET_RANGE_PACKET);
         cmd = packet.cmd;
@@ -40,7 +41,11 @@ namespace tair {
       {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_READ;
+      }
+
+      bool encode(DataBuffer *output)
       {
         output->writeInt8(server_flag);
         output->writeInt16(cmd);
@@ -53,22 +58,85 @@ namespace tair {
         return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
-        if (header->_dataLen < 7) {
-          log_warn( "buffer data too few.");
+        //  int8   server_flag    1B     (must)
+        //  int16  area           2B     (must)
+        //  int32  offset         4B     (must)
+        //  int32  limit          4B     (must)
+        //  -------------------------
+        //  total                11B
+        if (input->readInt8(&server_flag) == false ||
+            input->readInt16(&cmd) == false ||
+            input->readInt16(&area) == false ||
+            input->readInt32(&offset) == false ||
+            input->readInt32(&limit) == false) {
+          log_warn( "buffer data too few, buffer length %d", header->_dataLen);
           return false;
         }
-        server_flag = input->readInt8();
-        cmd = input->readInt16();
-        area = input->readInt16();
-        offset = input->readInt32();     
-        limit = input->readInt32();     
 
-        key_start.decode(input);
-        key_end.decode(input);
+#if TAIR_MAX_AREA_COUNT < 65536
+        if (area >= TAIR_MAX_AREA_COUNT) {
+          log_warn("area overflow: "
+              "server_flag %x, cmd %d, area %d, offset %d, limit %d",
+              server_flag, cmd, area, offset, limit);
+          return false;
+        }
+#endif
+
+        if (!key_start.decode(input)) {
+          log_warn("key_start decode failed: "
+              "server_flag %x, cmd %d, area %d, offset %d, limit %d",
+              server_flag, cmd, area, offset, limit);
+          return false;
+        }
+
+        if (!key_end.decode(input)) {
+          log_warn("key_end decode failed: "
+              "server_flag %x, cmd %d, area %d, offset %d, limit %d",
+              server_flag, cmd, area, offset, limit);
+          return false;
+        }
 
         return true;
+      }
+
+      virtual const data_entry* pick_key() const
+      {
+        //~ data_entry.size() is not const!!!!!!!!!!!!!!!!!!!!!!!!!!
+        //if (key_start.size() == 0) return NULL;
+        return &key_start;
+      }
+
+      virtual void dump() const
+      {
+        char ascii_key[72];
+        ascii_key[0] = '\0';
+        const data_entry *picked = pick_key();
+        if (picked != NULL) {
+          pick_key()->to_ascii(ascii_key, sizeof(ascii_key));
+        }
+        fprintf(stderr,
+            "op: %s(%d)\n\t"
+            "area: %d, cmd: %u, offset:%u, limit: %u\n\t"
+            "key: %s\n",
+            name(getPCode()), getPCode(), area, cmd, offset, limit, ascii_key);
+      }
+
+      virtual size_t size() const
+      {
+        if (LIKELY(getDataLen() != 0))
+          return getDataLen() + 16;
+
+        size_t total = 1 + 2 + 2 + 4 + 4;
+        total += key_start.encoded_size() + key_end.encoded_size();
+
+        return total + 16; //header 16 bytes
+      }
+
+      virtual uint16_t ns() const
+      {
+        return area;
       }
 
     public:
@@ -106,8 +174,11 @@ namespace tair {
         }
       }
 
+      virtual base_packet::Type get_type() {
+         return base_packet::RESP_COMMON;
+      }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
         output->writeInt32(config_version);
         output->writeInt32(code);
@@ -125,12 +196,31 @@ namespace tair {
         return true;
       }
 
+      virtual size_t size() const
+      {
+        if (UNLIKELY(getDataLen() != 0))
+          return getDataLen() + 16;
+
+        size_t total = 4 + 4 + 2 + 4 + 2;
+        if (key_data_vector != NULL)
+        {
+           for (uint32_t i = 0; i < key_data_vector->size(); ++i)
+           {
+             data_entry *data = (*key_data_vector)[i];
+             if (data != NULL)
+               total += data->encoded_size();
+           }
+           total += 4;
+        }
+        return total + 16; //header 16 bytes
+      }
+
       void set_cmd(int cmd)
       {
         this->cmd = cmd;
       }
 
-      void set_code(int code)
+      virtual void set_code(int code)
       {
         this->code = code;
       }
@@ -144,7 +234,7 @@ namespace tair {
       {
         if (hasnext)
             flag |= FLAG_HASNEXT;
-        else 
+        else
             flag &= FLAG_HASNEXT_MASK;
       }
 
@@ -153,13 +243,14 @@ namespace tair {
         return flag & FLAG_HASNEXT;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
-        if (header->_dataLen < 8) 
+        if (header->_dataLen < 8)
         {
           log_warn( "buffer data too few.");
           return false;
         }
+
         config_version = input->readInt32();
         code = input->readInt32();
         cmd = input->readInt16();
@@ -167,7 +258,7 @@ namespace tair {
         flag = input->readInt16();
 
         key_data_vector = new tair_dataentry_vector();
-        for (uint32_t i=0; i<key_count; i++) 
+        for (uint32_t i=0; i<key_count; i++)
         {
           data_entry *key = new data_entry();
           key->decode(input);
@@ -194,9 +285,9 @@ namespace tair {
 
       void set_key_data_vector(tair_dataentry_vector *result)
       {
-        if (key_data_vector != NULL) 
+        if (key_data_vector != NULL)
         {
-          for (uint32_t i = 0; i < key_data_vector->size(); i++) 
+          for (uint32_t i = 0; i < key_data_vector->size(); i++)
           {
             if ((*key_data_vector)[i] != NULL)
             {
@@ -211,7 +302,12 @@ namespace tair {
 
       void set_key_count(int count)
       {
-        key_count = count; 
+        key_count = count;
+      }
+
+      virtual bool failed() const
+      {
+        return code != TAIR_RETURN_SUCCESS;
       }
 
     public:

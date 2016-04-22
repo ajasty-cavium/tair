@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: cluster_info_updater.hpp 1140 2012-09-18 03:32:01Z nayan@taobao.com $
  *
  * Authors:
  *   nayan <nayan@taobao.com>

@@ -4,10 +4,11 @@
 #include <time.h>
 #include <pthread.h>
 
+#include "define.hpp"
 #include "flow_controller.h"
-#include "atomic.h"
+#include "util.hpp"
 
-#define MAXAREA 1024
+#define MAXAREA TAIR_MAX_AREA_COUNT
 
 namespace flstorage
 {
@@ -21,11 +22,11 @@ namespace stat
 
 struct Flow
 {
-  atomic_t curt_quantity;
-  atomic_t last_per_second;
-  atomic_t last_cal_time;
-  atomic_t lower_bound;
-  atomic_t upper_bound;
+  volatile int64_t  curt_quantity;
+  volatile int64_t  last_per_second;
+  volatile int64_t  last_cal_time;
+  volatile int64_t  lower_bound;
+  volatile int64_t  upper_bound;
   volatile FlowStatus status;
 };
 
@@ -34,6 +35,9 @@ struct AreaFlow
   Flow in;
   Flow out;
   Flow ops;
+  volatile bool is_recovery;
+  volatile time_t last_recovery_time;
+  volatile FlowType overflow_type;
   volatile FlowStatus status;
 };
 
@@ -45,15 +49,29 @@ class FlowControllerImpl : public FlowController
 
   virtual Flowrate GetFlowrate(int ns);
 
+  virtual bool ShouldFlowControl(int ns);
+
+  virtual FlowType GetCurrOverFlowType(int ns);
+
+  virtual char const * const GetCurrOverFlowTypeStr(int ns);
+
+  virtual void GetCurrOverFlowRecord(int ns, int64_t &lower, int64_t &upper, int64_t &current);
+
   virtual FlowStatus IsOverflow(int ns);
 
-  virtual bool AddUp(int ns, int in, int out);
+  virtual bool AddUp(int ns, int in, int out, int weight = 1);
 
-  virtual bool SetFlowLimit(int ns, FlowType type, int lower, int upper);
+  virtual bool SetFlowLimit(int ns, FlowType type, int64_t lower, int64_t upper);
+
+  virtual bool SetDefaultLimit(int ns);
 
   virtual FlowLimit GetFlowLimit(int ns, FlowType type);
 
   virtual bool Initialize();
+
+  virtual bool SyncFlowLimit(const std::map<int, AllFlowLimit> &flow_limits);
+
+  virtual void SetAreaFlowPolicy(int ns, bool flag);
 
  private:
   void BackgroundCalFlows();
@@ -62,23 +80,29 @@ class FlowControllerImpl : public FlowController
 
   static void* BackgroundFunc(void *arg);
 
-  AreaFlow flows_[MAXAREA + 1];  
+  AreaFlow flows_[MAXAREA + 1];
   bool stop_;
   pthread_t bg_tid;
 
   time_t cal_interval_second_;
   flstorage::Mutex *mutex_;
 
- private:
-  static const int DEFAULT_NET_UPPER = 30 * 1024 * 1024; // 30MB/s
-  static const int DEFAULT_NET_LOWER = 15 * 1024 * 1024; // 15MB/s
-  static const int DEFAULT_OPS_UPPER = 30000; // 30000/s
-  static const int DEFAULT_OPS_LOWER = 20000; // 20000/s
+  // area flow policy
+  // default is false, false means whether flow control open
+  // depends on both maxarea and area flow status ;
+  // true means that it only depends on area flow status
+  tair::util::dynamic_bitset area_flow_policy_;
 
-  static const int DEFAULT_TOTAL_NET_UPPER = 75 * 1024 * 1024; // 75 MB/s
-  static const int DEFAULT_TOTAL_NET_LOWER = 65 * 1024 * 1024; // 65 MB/s
-  static const int DEFAULT_TOTAL_OPS_UPPER = 50000; // 50000 ops
-  static const int DEFAULT_TOTAL_OPS_LOWER = 40000; // 40000 ops
+ private:
+  static int default_net_upper;
+  static int default_net_lower;
+  static int default_ops_upper;
+  static int default_ops_lower;
+ 
+  static int default_total_net_upper;
+  static int default_total_net_lower;
+  static int default_total_ops_upper;
+  static int default_total_ops_lower;
 };
 
 

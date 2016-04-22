@@ -7,7 +7,7 @@
  *
  * statistics header file
  *
- * Version: $Id$
+ * Version: $Id: stat_helper.hpp 1989 2013-12-06 15:24:47Z yunhen $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -23,7 +23,7 @@
 #include "log.hpp"
 #include "mmap_file.hpp"
 #include "stat_info.hpp"
-#include "storage_manager.hpp"
+#include "storage/storage_manager.hpp"
 
 namespace tair {
    const static int STAT_LENGTH = TAIR_MAX_AREA_COUNT;
@@ -58,6 +58,7 @@ namespace tair {
       void do_compress();
 
    public:
+      static int stat_high_ops_count;
       static stat_helper stat_helper_instance;
    private:
       tair_stat *stat;

@@ -7,7 +7,7 @@
  *
  * data structure used for stat
  *
- * Version: $Id$
+ * Version: $Id: stat_info.hpp 1279 2013-01-04 02:50:08Z dutor $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -17,7 +17,6 @@
 #ifndef TAIR_STATINFO_H
 #define TAIR_STATINFO_H
 #include <tbsys.h>
-#include <tbnet.h>
 namespace tair {
 #pragma pack(1)
    class tair_stat {

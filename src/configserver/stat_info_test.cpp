@@ -7,7 +7,7 @@
  *
  * stat_info_test.cpp is for testing the class stat_info.
  *
- * Version: $Id$
+ * Version: $Id: stat_info_test.cpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>

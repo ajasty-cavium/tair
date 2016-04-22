@@ -7,7 +7,7 @@
  *
  * migrate interface
  *
- * Version: $Id$
+ * Version: $Id: base_migrate.hpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *   fanggang <fanggang@taobao.com>

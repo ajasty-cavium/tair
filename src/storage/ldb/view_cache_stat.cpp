@@ -7,7 +7,7 @@
  *
  * view cache stat file
  *
- * Version: $Id$
+ * Version: $Id: view_cache_stat.cpp 470 2011-12-28 05:26:28Z zongdai $
  *
  * Authors:
  *   nayan <nayan@taobao.com>

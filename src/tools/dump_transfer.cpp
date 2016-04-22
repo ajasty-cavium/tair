@@ -16,6 +16,7 @@ public:
 
     inline void set_config_server(const char *cs);
     inline void set_group(const char *group);
+    inline void set_mode(const char *mode);
     inline void set_dump_file(const char *dump_file);
     inline void set_interval(int interval);
 
@@ -48,11 +49,12 @@ private:
 
 private:
     void parse_dump_file();
+    void parse_ldb_dump_file();
     int put(kv_pair *kv);
 
 private:
     std::queue<kv_pair*> taskq_;
-    int max_qsize_;
+    size_t max_qsize_;
     tbsys::CThreadCond qcond_;
     std::string dump_file_;
     FILE *dump_fd_;
@@ -60,6 +62,8 @@ private:
     std::string config_server_;
     std::string group_name_;
     tair::tair_client_api *client_;
+
+    std::string mode_;
 
     int interval_;
     bool finished_;
@@ -85,6 +89,11 @@ void DumpTransfer::set_config_server(const char *cs)
 void DumpTransfer::set_group(const char *group)
 {
     group_name_ = group;
+}
+
+void DumpTransfer::set_mode(const char *mode)
+{
+    mode_ = mode;
 }
 
 void DumpTransfer::set_dump_file(const char *dump_file)
@@ -127,7 +136,13 @@ void DumpTransfer::run(tbsys::CThread *thread, void *args)
     int thread_idx = (int) ((long)args);
 
     if (thread_idx == 0) {
-        parse_dump_file();
+        if (mode_ == "mdb") {
+          parse_dump_file();
+        } else if (mode_ == "ldb") {
+          parse_ldb_dump_file();
+        } else {
+          log_warn("mode now support 'mdb' or 'ldb'");
+        }
     } else {
         log_warn("thread %d start putting key", thread_idx);
         while (!_stop) {
@@ -137,6 +152,7 @@ void DumpTransfer::run(tbsys::CThread *thread, void *args)
             }
             if (_stop || (finished_ && taskq_.empty())) {
                 qcond_.unlock();
+                log_error("%d write completed or stoped", thread_idx);
                 break;
             }
 
@@ -161,7 +177,7 @@ void DumpTransfer::run(tbsys::CThread *thread, void *args)
                         }
                     }
                 } else {
-                    log_error("thread %d put failed, version error.");
+                    log_error("thread %d put failed, version error.", thread_idx);
                 }
             }
             delete kv;
@@ -171,6 +187,178 @@ void DumpTransfer::run(tbsys::CThread *thread, void *args)
         }
     }
 }
+
+void DumpTransfer::parse_ldb_dump_file()
+{
+  int dump_file_index = 1;
+  char filename[32];
+  long long key_index = 0;
+  while (true) {
+    snprintf(filename, 32, "%s.%d", dump_file_.c_str(), dump_file_index);
+    dump_fd_ = fopen(filename, "r");
+    if (dump_fd_ == NULL) {
+      finished_ = true;
+      break;
+    }
+    log_error("%s start to upload", filename);
+    dump_file_index++;
+
+    while(!_stop) {
+
+//    "+----------+------+--------+----+---------+-----+-------+------+\n"
+//    "|(p)keysize|(p)key|skeysize|skey|valuesize|value|keysize|......|\n"
+//    "+----------+------+--------+----+---------+-----+-------+------+\n"
+//    "| int32    |  ..  | int32  |....|  int32  | ... | int32 |      |\n"
+//    "+----------+------+--------+----+---------+-----+-------+------+\n"
+//    "`size's byte order: little endian\n";
+//
+//    (p)key = | area 2Byte | key |
+
+      uint16_t area = 0;
+      uint32_t keysize = 0;
+      char* key = NULL;
+      uint32_t skeysize = 0;
+      char* skey = NULL;
+      uint32_t valuesize = 0;
+      char* value = NULL;
+
+      // not used
+      uint8_t  meta_version = 0;
+      uint8_t  flag = 0;
+      uint16_t version = 0;
+      uint32_t cdate = 0;
+      uint32_t mdate = 0;
+      uint32_t edate = 0;
+
+      size_t rd_size = fread(&keysize, sizeof(int32_t), 1, dump_fd_);
+      if (rd_size == 0) {
+        // read to file end
+        break;
+      } else if (rd_size < 1) {
+        log_error("parse keysize: file format error");
+        exit(1);
+      }
+      key = new char[keysize];
+      rd_size = fread(key, sizeof(char), keysize, dump_fd_);
+      if (rd_size < keysize) {
+        log_error("parse key: file format error");
+        exit(1);
+      }
+
+      rd_size = fread(&skeysize, sizeof(int32_t), 1, dump_fd_);
+      if (rd_size < 1) {
+        log_error("parse skeysize: file format error");
+        exit(1);
+      }
+      if (skeysize > 0) {
+        // prefix subkey
+        skey = new char[skeysize];
+        rd_size = fread(skey, sizeof(char), skeysize, dump_fd_);
+        if (rd_size < skeysize) {
+          log_error("parse skey: file format error");
+          exit(1);
+        }
+      }
+
+      rd_size = fread(&valuesize, sizeof(int32_t), 1, dump_fd_);
+      if (rd_size < 1) {
+        log_error("parse valuesize: file format error");
+        exit(1);
+      }
+      value = new char[valuesize];
+      rd_size = fread(value, sizeof(char), valuesize, dump_fd_);
+      if (rd_size < valuesize) {
+        log_error("parse value: file format error");
+        exit(1);
+      }
+
+      // uint8_t  meta_version_;
+      // uint8_t  flag_;
+      // uint16_t version_;
+      // uint32_t cdate_;
+      // uint32_t mdate_;
+      // uint32_t edate_;
+      // uint16_t area;
+      rd_size = fread(&meta_version, sizeof(uint8_t), 1, dump_fd_);
+      if (rd_size < 1) {
+        log_error("parse meta version: file format error");
+        exit(1);
+      }
+      rd_size = fread(&flag, sizeof(uint8_t), 1, dump_fd_);
+      if (rd_size < 1) {
+        log_error("parse flag: file format error");
+        exit(1);
+      }
+      rd_size = fread(&version, sizeof(uint16_t), 1, dump_fd_);
+      if (rd_size < 1) {
+        log_error("parse version: file format error");
+        exit(1);
+      }
+      rd_size = fread(&cdate, sizeof(uint32_t), 1, dump_fd_);
+      if (rd_size < 1) {
+        log_error("parse cdate: file format error");
+        exit(1);
+      }
+      rd_size = fread(&mdate, sizeof(uint32_t), 1, dump_fd_);
+      if (rd_size < 1) {
+        log_error("parse mdate: file format error");
+        exit(1);
+      }
+      rd_size = fread(&edate, sizeof(uint32_t), 1, dump_fd_);
+      if (rd_size < 1) {
+        log_error("parse edate: file format error");
+        exit(1);
+      }
+      rd_size = fread(&area, sizeof(uint16_t), 1, dump_fd_);
+      if (rd_size < 1) {
+        log_error("parse edate: file format error");
+        exit(1);
+      }
+
+      char* tkey = new char[keysize + skeysize];
+      memcpy(tkey, key, keysize);
+      memcpy(tkey + keysize, skey, skeysize);
+      delete key;
+      delete skey;
+
+      // to be kvpair
+      kv_pair* kv = new kv_pair();
+      kv->version = 1;
+      // kv->cdate = cdate;
+      kv->mdate = mdate;
+      kv->edate = edate;
+      kv->area  = area;
+
+      kv->key = new data_entry();
+      kv->key_len = keysize + skeysize;
+      kv->key->set_alloced_data(tkey, kv->key_len);
+
+      kv->value = new data_entry();
+      kv->value_len = valuesize;
+      kv->value->set_alloced_data(value, kv->value_len);
+
+      if (key_index % 1000 == 0) {
+        log_error("key %lld start to upload", key_index);
+      }
+      key_index++;
+
+      qcond_.lock();
+      while (!_stop && taskq_.size() >= (size_t)max_qsize_) {
+        qcond_.wait();
+      }
+      if (_stop) {
+        delete kv;
+        break;
+      }
+      taskq_.push(kv);
+      qcond_.unlock();
+      qcond_.signal();
+    }
+
+    fclose(dump_fd_);
+  }
+}
+
 
 void DumpTransfer::parse_dump_file()
 {
@@ -200,10 +388,10 @@ void DumpTransfer::parse_dump_file()
         fread(&kv->mdate, sizeof(uint32_t), 1, dump_fd_);
         fread(&kv->edate, sizeof(uint32_t), 1, dump_fd_);
         fread(&kv->key_len, sizeof(uint32_t), 1, dump_fd_);
-        assert(kv->key_len <= kbuf_size);
+        assert(kv->key_len <= (size_t)kbuf_size);
         fread(kbuf, sizeof(char), kv->key_len, dump_fd_);
         fread(&kv->value_len, sizeof(uint32_t), 1, dump_fd_);
-        assert(kv->value_len <= vbuf_size);
+        assert(kv->value_len <= (size_t)vbuf_size);
         fread(vbuf, sizeof(char), kv->value_len, dump_fd_);
 
         char *key = new char[kv->key_len];
@@ -216,7 +404,7 @@ void DumpTransfer::parse_dump_file()
         kv->value->set_alloced_data(value, kv->value_len);
 
         qcond_.lock();
-        while (!_stop && taskq_.size() >= max_qsize_) {
+        while (!_stop && taskq_.size() >= (size_t)max_qsize_) {
             qcond_.wait();
         }
         if (_stop) {
@@ -251,7 +439,7 @@ main(int argc, char **argv)
 {
     //~ parse the command line
     int opt;
-    const char *optstring = "hvc:g:l:f:t:i:";
+    const char *optstring = "hvc:g:l:f:t:i:m:";
     struct option longopts[] = {
         {"config_server", 1, NULL, 'c'},
         {"group_name", 1, NULL, 'g'},
@@ -261,11 +449,13 @@ main(int argc, char **argv)
         {"interval", 1, NULL, 'i'},
         {"help", 0, NULL, 'h'},
         {"version", 0, NULL, 'v'},
+        {"mode", 1, NULL, 'm'},
         {0, 0, 0, 0}
     };
 
     const char *config_server = NULL;
     const char *group_name = NULL;
+    const char *mode = "mdb";  /* mdb or ldb */
     const char *log_file = "logs/dump_transfer.log";
     const char *dump_file = NULL;
     const char *thread_count = "53";
@@ -289,6 +479,9 @@ main(int argc, char **argv)
                 break;
             case 'i':
                 interval = optarg;
+                break;
+            case 'm':
+                mode = optarg;
                 break;
             case 'v':
                 fprintf(stderr, "BUILD_TIME: %s %s\n\n", __DATE__, __TIME__);
@@ -319,6 +512,7 @@ main(int argc, char **argv)
     transfer->set_config_server(config_server);
     transfer->set_group(group_name);
     transfer->set_dump_file(dump_file);
+    transfer->set_mode(mode);
     transfer->set_interval(atoi(interval));
     transfer->setThreadCount(atoi(thread_count));
 

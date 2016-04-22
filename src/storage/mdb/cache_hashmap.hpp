@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: cache_hashmap.hpp 2236 2014-03-07 07:51:46Z mobing $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>
@@ -14,17 +14,21 @@
  */
 #ifndef __HASH_TABLE_H
 #define __HASH_TABLE_H
+
 #include "mem_pool.hpp"
 #include "mem_cache.hpp"
 #include "mdb_define.hpp"
+
 #include <string.h>
 
 namespace tair {
 
+  class mdb_instance;
+
   class cache_hash_map {
   public:
-    cache_hash_map(mem_pool * pool,
-                   int bucket_shift /*shift */ ):this_mem_pool(pool)
+    cache_hash_map(mem_pool * pool, mdb_instance *instance,
+                   int bucket_shift /*shift */ ):this_mem_pool(pool), this_instance(instance)
     {
       assert(pool != 0);
       assert(pool->get_pool_addr() != 0);
@@ -46,6 +50,7 @@ namespace tair {
           tmp_ret = pool->alloc_page();
           assert(tmp_ret != NULL);
         }
+        UNUSED(tmp_ret);
 
         hashmng->item_count = 0;
       }
@@ -59,27 +64,47 @@ namespace tair {
     }
     ~cache_hash_map() {
     }
+
     void insert(mdb_item * mdb_item);
     bool remove(mdb_item * mdb_item);
     mdb_item *find(const char *key, unsigned int key_len);
+
+    void insert(mdb_item * mdb_item, unsigned int hv);
+    bool remove(mdb_item * mdb_item, unsigned int hv);
+
+    mdb_item *find_and_remove_expired(const char *key, unsigned int key_len, unsigned int hv);
+    mdb_item *find(const char *key, unsigned int key_len, unsigned int hv);
+
+    bool change_item_pointer(mdb_item *to_item, mdb_item *from_item);
+
     int get_bucket_size()
     {
       return hashmng->bucket_size;
     }
+
     uint64_t *get_hashmap()
     {
       return hashtable;
     }
+
     int get_item_count()
     {
       return hashmng->item_count;
     }
-  private:
-    inline int get_bucket_index(mdb_item * mdb_item);
-    inline int get_bucket_index(const char *key, unsigned int key_len);
-    mdb_item *__find(uint64_t head, const char *key, unsigned int key_len,
-                     mdb_item ** pprev = 0);
+
+    void set_cache(mem_cache *cache)
+    {
+      this->cache = cache;
+    }
+
+    unsigned int hash(mdb_item *it) { return hash(ITEM_KEY(it), it->key_len); }
     unsigned int hash(const char *key, int len);
+
+  private:
+    inline int get_bucket_index(unsigned int hv);
+
+    mdb_item *__find(uint64_t head, const char *key, unsigned int key_len,
+                     mdb_item ** pprev, unsigned int hv, bool remove_expired);
 
     struct hash_manager
     {
@@ -88,8 +113,11 @@ namespace tair {
       int item_count;
       int start_page;
     };
+
     hash_manager *hashmng;
     mem_pool *this_mem_pool;
+    mem_cache *cache;
+    mdb_instance *this_instance;
     uint64_t *hashtable;
   };
 

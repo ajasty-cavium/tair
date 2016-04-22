@@ -27,6 +27,10 @@ namespace tair {
     request_prefix_hides_by_proxy(request_prefix_hides_by_proxy &packet) : request_hide_by_proxy(packet) {
       setPCode(TAIR_REQ_PREFIX_HIDES_BY_PROXY_PACKET);
     }
+
+    virtual base_packet::Type get_type() {
+      return base_packet::REQ_WRITE;
+    }
   };
 }
 

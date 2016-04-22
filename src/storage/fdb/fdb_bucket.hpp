@@ -7,7 +7,7 @@
  *
  * fdb_bucket hold one bucket for fdb storage engine
  *
- * Version: $Id$
+ * Version: $Id: fdb_bucket.hpp 80 2010-12-30 09:07:23Z huzhenxiong.pt@taobao.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>

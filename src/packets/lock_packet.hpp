@@ -21,7 +21,7 @@ namespace tair {
     {
       setPCode(TAIR_REQ_LOCK_PACKET);
     }
-    request_lock(request_lock& packet)
+    request_lock(request_lock& packet) : base_packet(packet), area(0), lock_type(LOCK_VALUE), data(NULL)
     {
       setPCode(TAIR_REQ_LOCK_PACKET);
       area = packet.area;
@@ -36,6 +36,7 @@ namespace tair {
         data->clone(*(packet.data));
       }
     }
+
     ~request_lock()
     {
       if (data != NULL)
@@ -43,7 +44,12 @@ namespace tair {
         delete data;
       }
     }
-    bool encode(tbnet::DataBuffer *output)
+
+    virtual base_packet::Type get_type() {
+      return base_packet::REQ_WRITE;
+    }
+
+    bool encode(DataBuffer *output)
     {
       output->writeInt16(area);
       output->writeInt32(lock_type);
@@ -58,22 +64,67 @@ namespace tair {
       }
       return true;
     }
-    bool decode(tbnet::DataBuffer *input,tbnet::PacketHeader *header)
+
+    virtual size_t size() const
     {
-      area = input->readInt16();
-      lock_type = static_cast<LockType>(input->readInt32());
-      key.decode(input);
+      if (LIKELY(getDataLen() != 0))
+        return getDataLen() + 16;
+
+      size_t total = 2 + 4 + key.encoded_size();
+      if ((PUT_AND_LOCK_VALUE == lock_type) && (data != NULL))
+        total += data->encoded_size();
+      return total + 16; //header 16 btyes
+    }
+
+    uint16_t ns() const
+    {
+      return (uint16_t)area;
+    }
+
+    bool decode(DataBuffer *input,PacketHeader *header)
+    {
+      // int16    area          2B    (must)
+      // int32    lock_type     4B    (must)
+      // --------------------------
+      // total                  6B
+      uint16_t area_i = 0;
+      uint32_t lock_type_i = 0;
+      if (input->readInt16(&area_i) == false ||
+          input->readInt32(&lock_type_i) == false) {
+        log_warn("buffer data too few, buffer length %d", header->_dataLen);
+        return false;
+      }
+      area = area_i;
+      lock_type = static_cast<LockType>(lock_type_i);
+
+#if TAIR_MAX_AREA_COUNT < 65536
+      if (area < 0 || area >= TAIR_MAX_AREA_COUNT) {
+        log_warn("area overflow: area %d, lock_type %d", area, lock_type);
+        return false;
+      }
+#endif
+
+      if (!key.decode(input)) {
+        log_warn("key decode fail: area %d, lock_type %d", area, lock_type);
+        return false;
+      }
+
       if (PUT_AND_LOCK_VALUE == lock_type)
       {
-        if (NULL == data)
-        {
+        if (NULL == data) {
           data = new data_entry();
         }
-        data->decode(input);
+
+        if (!data->decode(input)) {
+          log_warn("data decode fail: area %d, lock_type %d", area, lock_type);
+          return false;
+        }
       }
+
       return true;
     }
 
+  public:
     int area;
     LockType lock_type;
     data_entry key;

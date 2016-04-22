@@ -7,7 +7,7 @@
  *
  * storage engine interface
  *
- * Version: $Id$
+ * Version: $Id: storage_manager.hpp 2935 2014-09-09 09:35:24Z yunhen $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -20,7 +20,6 @@
 #include <stdint.h>
 #include <map>
 #include "util.hpp"
-#include "data_entry.hpp"
 #include "define.hpp"
 #include "stat_info.hpp"
 
@@ -33,10 +32,20 @@ const int ITEM_HEAD_LENGTH = 2;
     bool is_migrate;
   } md_info;
 
+  class operation_record;
   namespace common
   {
+    class StatSchema;
+    class OpStat;
     class RecordLogger;
+    class data_entry;
+    class mput_record;
   }
+  class _ItemData;
+  typedef _ItemData item_data_info;
+  struct _item_meta;
+  typedef _item_meta item_meta_info;
+  class tair_stat;
   namespace storage
   {
     using namespace tair::util;
@@ -55,7 +64,9 @@ const int ITEM_HEAD_LENGTH = 2;
       virtual int put(int bucket_number, data_entry & key, data_entry & value,
                       bool version_care, int expire_time) = 0;
 
-      virtual int batch_put(int bucket_number, int area, tair::common::mput_record_vec* record_vec, bool version_care)
+      virtual int direct_mupdate(int bucket_number, const std::vector<operation_record*>& kvs)
+      { return TAIR_RETURN_NOT_SUPPORTED; }
+      virtual int batch_put(int bucket_number, int area, std::vector<mput_record*>* record_vec, bool version_care)
       { return TAIR_RETURN_NOT_SUPPORTED; }
 
       virtual int get(int bucket_number, data_entry & key,
@@ -64,12 +75,55 @@ const int ITEM_HEAD_LENGTH = 2;
       virtual int remove(int bucket_number, data_entry & key,
                          bool version_care) = 0;
       virtual int add_count(int bucket_num,data_entry &key, int count, int init_value,
-                bool allow_negative,int expire_time,int &result_value)
+                int low_bound, int upper_bound, int expire_time,int &result_value)
       {
           return TAIR_RETURN_NOT_SUPPORTED;
       }
 
+      virtual int touch(int bucket_num, data_entry &key, int expire)
+      {
+        return TAIR_RETURN_NOT_SUPPORTED;
+      }
+
+      virtual int mc_set(int bucket_num, data_entry &key, data_entry &value,
+          bool version_care, int expire)
+      {
+        return TAIR_RETURN_NOT_SUPPORTED;
+      }
+
+      virtual int add(int bucket_num, data_entry &key, data_entry &value,
+          bool version_care, int expire)
+      {
+        return TAIR_RETURN_NOT_SUPPORTED;
+      }
+
+      virtual int replace(int bucket_num, data_entry &key, data_entry &value,
+          bool version_care, int expire)
+      {
+        return TAIR_RETURN_NOT_SUPPORTED;
+      }
+
+      virtual int append(int bucket_num, data_entry &key, data_entry &value,
+          bool version_care, data_entry *new_value = NULL)
+      {
+        return TAIR_RETURN_NOT_SUPPORTED;
+      }
+
+      virtual int prepend(int bucket_num, data_entry &key, data_entry &value,
+          bool version_care, data_entry *new_value = NULL)
+      {
+        return TAIR_RETURN_NOT_SUPPORTED;
+      }
+
+      virtual int incr_decr(int bucket, data_entry &key, uint64_t delta, uint64_t init,
+          bool is_incr, int expire, uint64_t &result, data_entry *new_value = NULL)
+      {
+        return TAIR_RETURN_NOT_SUPPORTED;
+      }
+
       virtual int get_range(int bucket_number,data_entry & key_start,data_entry & key_end, int offset, int limit, int type, std::vector<data_entry*> &result, bool &has_next){return TAIR_RETURN_NOT_SUPPORTED;}
+
+      virtual int del_range(int bucket_number,data_entry & key_start,data_entry & key_end, int offset, int limit, int type, std::vector<data_entry*> &result, bool &has_next){return TAIR_RETURN_NOT_SUPPORTED;}
 
       virtual int clear(int area) = 0;
 
@@ -83,15 +137,23 @@ const int ITEM_HEAD_LENGTH = 2;
 
       virtual void get_stats(tair_stat * stat) = 0;
 
+      virtual void get_stats(char*& buf, int32_t& size, bool& alloc) {}
+      virtual const tair::common::StatSchema* get_stat_schema() { return NULL; }
+      virtual void set_opstat(tair::common::OpStat* stat) {}
+
       virtual int get_meta(data_entry &key, item_meta_info &meta) {
         return TAIR_RETURN_NOT_SUPPORTED;
+      }
+
+      virtual int get_instance_count() {
+        return 1;
       }
 
       // Every storage engine can implement own remote synchronization logger to
       // make use of its specific feature(eg, cache can have less strict data consistency
       // where memory queue can be afford; permanence storage engine can direct use its
       // bigLog).
-      virtual tair::common::RecordLogger* get_remote_sync_logger() {
+      virtual tair::common::RecordLogger* get_remote_sync_logger(int version = 0) {
         return NULL;
       }
 
@@ -118,7 +180,13 @@ const int ITEM_HEAD_LENGTH = 2;
         meta &= ~flag;
       }
 
-      virtual int op_cmd(ServerCmdType cmd, std::vector<std::string>& params) { return TAIR_RETURN_NOT_SUPPORTED; }
+      virtual bool should_flush_data() { return false; }
+      // whether tair_serve need health check before send heartbeat
+      virtual bool need_health_check() { return false; }
+      virtual int op_cmd(ServerCmdType cmd, std::vector<std::string>& params, std::vector<std::string>& infos)
+      {
+        return TAIR_RETURN_SUCCESS;
+      }
 
       virtual void set_bucket_count(uint32_t bucket_count)
       {
@@ -126,6 +194,9 @@ const int ITEM_HEAD_LENGTH = 2;
           return;                //can not rest bucket count
         this->bucket_count = bucket_count;
         return;
+      }
+
+      virtual void reload_config() {
       }
     protected:
         uint32_t bucket_count;

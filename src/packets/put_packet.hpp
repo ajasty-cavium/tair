@@ -7,7 +7,7 @@
  *
  * put packet
  *
- * Version: $Id$
+ * Version: $Id: put_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -33,7 +33,8 @@ namespace tair {
          expired = 0;
       }
 
-      request_put(request_put &packet) 
+      request_put(const request_put &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_PUT_PACKET);
          server_flag = packet.server_flag;
@@ -44,21 +45,48 @@ namespace tair {
          data.clone(packet.data);
       }
 
-      size_t size() 
+      virtual const data_entry* pick_key() const
       {
-        return 1 + 2 + 2 + 4 + key.encoded_size() + data.encoded_size() + 16;
+        return &key;
       }
 
-      virtual uint16_t ns() 
+      virtual void dump() const
       {
-        return area;
+        char ascii_key[72];
+        ascii_key[0] = '\0';
+        const data_entry *picked = pick_key();
+        if (picked != NULL) {
+          pick_key()->to_ascii(ascii_key, sizeof(ascii_key));
+        }
+
+        fprintf(stderr,
+            "put:\n\t"
+            "area: %d, expire: %d, version: %d, packet size: %lu, server_flag:%d\n\t"
+            "key: %s\n",
+            area, expired, version, size(), server_flag, ascii_key);
+      }
+
+      virtual size_t size() const
+      {
+         if (LIKELY(getDataLen() != 0))
+           return getDataLen() + 16;
+         return 1 + 2 + 2 + 4 + key.encoded_size() + data.encoded_size() + 16;
+      }
+
+      virtual base_packet::Type get_type() {
+        return base_packet::REQ_WRITE;
+      }
+
+      uint16_t ns() const
+      {
+         return area;
       }
 
       ~request_put()
       {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          output->writeInt8(server_flag);
          output->writeInt16(area);
@@ -69,19 +97,45 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) 
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
-         if (header->_dataLen < 15) {
-            log_warn( "buffer data too few.");
+         //  int8    server_flag   1B      (must)
+         //  int16   area          2B      (must)
+         //  int16   version       2B      (must)
+         //  int32   expired       4B      (must)
+         //  -------------------------
+         //  total                 9B
+         if (input->readInt8(&server_flag) == false ||
+             input->readInt16(&area) == false ||
+             input->readInt16(&version) == false ||
+             input->readInt32((uint32_t*)&expired) == false) {
+            log_warn( "buffer data too few, buffer length %d", header->_dataLen);
             return false;
          }
-         server_flag = input->readInt8();
-         area = input->readInt16();
-         version = input->readInt16();
-         expired = input->readInt32();
 
-         key.decode(input);
-         data.decode(input);
+#if TAIR_MAX_AREA_COUNT < 65536
+         if (area >= TAIR_MAX_AREA_COUNT) {
+           log_warn("area overflow: "
+               "server_flag %x, area %d, version %d, expired %d",
+               server_flag, area, version, expired);
+           return false;
+         }
+#endif
+
+         if (!key.decode(input)) {
+           log_warn("key decode failed: "
+               "server_flag %x, area %d, version %d, expired %d",
+               server_flag, area, version, expired);
+           return false;
+         }
+
+         if (!data.decode(input)) {
+           log_warn("data decode failed: "
+               "server_flag %x, area %d, version %d, expired %d",
+               server_flag, area, version, expired);
+           return false;
+         }
+
          key.data_meta.version = version;
 
          return true;
@@ -107,7 +161,8 @@ namespace tair {
       reset();
     }
 
-    request_mput(request_mput &packet)
+    request_mput(const request_mput &packet)
+      : base_packet(packet)
     {
       clone(packet, packet.alloc);
     }
@@ -117,7 +172,11 @@ namespace tair {
       clear();
     }
 
-    void clone(request_mput &packet, bool need_alloc)
+    virtual base_packet::Type get_type() {
+      return base_packet::REQ_WRITE;
+    }
+
+    void clone(const request_mput &packet, bool need_alloc)
     {
       if (this == &packet) {
         return ;
@@ -200,7 +259,7 @@ namespace tair {
 
       bool ret = true;
 #ifdef WITH_COMPRESS
-      tbnet::DataBuffer output;
+      DataBuffer output;
       do_encode(&output);
 
       uint32_t raw_len = output.getDataLen();
@@ -218,7 +277,7 @@ namespace tair {
     bool decompress()
     {
       if (!compressed) {
-        return true;        
+        return true;
       }
       if (NULL == packet_data || packet_data_len <= 0) {
         return false;
@@ -228,7 +287,7 @@ namespace tair {
 #ifdef WITH_COMPRESS
       // TODO: redundant memcpy now, compressor can provide uncompresslen interface and
       //       receive malloced buffer
-      tbnet::DataBuffer input;
+      DataBuffer input;
       char* raw_data = NULL;
       uint32_t raw_data_len = 0;
       ret = tair::common::compressor::do_decompress
@@ -246,7 +305,7 @@ namespace tair {
       return ret;
     }
 
-    bool do_encode(tbnet::DataBuffer *output)
+    bool do_encode(DataBuffer *output)
     {
       output->writeInt8(server_flag);
       output->writeInt16(area);
@@ -263,11 +322,22 @@ namespace tair {
       return true;
     }
 
-    bool do_decode(tbnet::DataBuffer *input)
+    bool do_decode(DataBuffer *input)
     {
-      server_flag = input->readInt8();
-      area = input->readInt16();
-      count = input->readInt32();
+      if (input->readInt8(&server_flag) == false ||
+          input->readInt16(&area) == false ||
+          input->readInt32(&count) == false) {
+        return false;
+      }
+
+#if TAIR_MAX_AREA_COUNT < 65536
+      if (area >= TAIR_MAX_AREA_COUNT) {
+        log_warn("area overflow: "
+            "server_flag %x, area %d, count %d",
+            server_flag, area, count);
+        return false;
+      }
+#endif
 
       if (count > 0) {
         record_vec = new mput_record_vec();
@@ -275,19 +345,50 @@ namespace tair {
         for (uint32_t i = 0; i < count; i++) {
           mput_record *rec = new mput_record();
           data_entry* key = new data_entry();
-          key->decode(input);
-          rec->key = key;
           value_entry* value = new value_entry();
-          value->decode(input);
+
+          if (!key->decode(input)) {
+            delete rec;
+            delete key;
+            delete value;
+
+            log_warn("key decode failed: "
+                "server_flag %x, area %d, count %d, index %u",
+                server_flag, area, count, i);
+            return false;
+          }
+          rec->key = key;
+
+          if (!value->decode(input)) {
+            rec->key = NULL;
+            delete rec;
+            delete key;
+            delete value;
+
+            log_warn("value decode failed: "
+                "server_flag %x, area %d, count %d, index %u",
+                server_flag, area, count, i);
+            return false;
+          }
           rec->value = value;
+
           record_vec->push_back(rec);
         }
+
+        return true;
       }
-      packet_id = input->readInt32();
+
+      if (input->readInt32(&packet_id) == false) {
+        log_warn("packet_id decode failed: "
+            "server_flag %x, area %d, count %d",
+            server_flag, area, count);
+        return false;
+      }
+
       return true;
     }
 
-    bool encode(tbnet::DataBuffer *output)
+    bool encode(DataBuffer *output)
     {
       output->writeInt8(compressed ? 1 : 0);
       if (compressed) {
@@ -299,20 +400,73 @@ namespace tair {
       return true;
     }
 
-    bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+    virtual size_t size() const
     {
-      if (header->_dataLen < 8) {
-        log_warn( "buffer data too few.");
+      if (LIKELY(getDataLen() != 0))
+        return getDataLen() + 16;
+
+      size_t total = 1;
+      if (compressed)
+      {
+        total += 4 + packet_data_len;
+      }
+      else
+      {
+        total += 1 + 2 + 4;
+        if (record_vec != NULL)
+        {
+          mput_record_vec::iterator it;
+          for (it = record_vec->begin(); it != record_vec->end(); ++it)
+          {
+            mput_record* rec = (*it);
+            total += rec->key->encoded_size();
+            total += rec->value->encoded_size();
+          }
+        }
+        total += 4;
+      }
+      return total + 16; // header 16 bytes
+    }
+
+    uint16_t ns() const
+    {
+      return area;
+    }
+
+    bool decode(DataBuffer *input, PacketHeader *header)
+    {
+      //  int8    server_flag   1B      (must)
+      //  -------------------------
+      //  total                 1B
+      uint8_t compressed_i = 0;
+      if (input->readInt8(&compressed_i) == false) {
+        log_warn("buffer data too few, buffer length %d", header->_dataLen);
         return false;
       }
+      compressed = (compressed_i != 0);
 
-      compressed = input->readInt8();
       if (compressed) {
-        packet_data_len = input->readInt32();
+        uint32_t packet_data_len_i = 0;
+        if (input->readInt32(&packet_data_len_i) == false) {
+          log_warn("packet_data_len decode failed, compressed %d", compressed);
+          return false;
+        }
+        packet_data_len = packet_data_len_i;
+
         packet_data = new char[packet_data_len];
-        input->readBytes(packet_data, packet_data_len);
+        if (input->readBytes(packet_data, packet_data_len) == false) {
+          delete packet_data;
+          packet_data = NULL;
+
+          log_warn("packet_data_len decode failed, "
+              "compressed %d, packet_data_len %zu",
+              compressed, packet_data_len);
+          return false;
+        }
       } else {
-        do_decode(input);
+        if (do_decode(input) == false) {
+          return false;
+        }
       }
       return true;
     }
@@ -321,7 +475,7 @@ namespace tair {
     {
       uint32_t temp = len + key.get_size() + 1 + data.get_size();
       if (temp > MAX_MPUT_PACKET_SIZE && count > 0) {
-        log_warn("mput packet size overflow: %u", temp);
+        log_info("mput packet size overflow: %u", temp);
         return false;
       }
       if (record_vec == NULL) {

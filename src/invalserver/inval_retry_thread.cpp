@@ -1,212 +1,218 @@
 #include "inval_retry_thread.hpp"
-
-namespace tair {
-  InvalRetryThread::InvalRetryThread() {
-    invalid_loader = NULL;
-    processor = NULL;
-    setThreadCount(RETRY_COUNT);
-    request_storage = NULL;
-  }
-
-  InvalRetryThread::~InvalRetryThread() {
-  }
-
-  void InvalRetryThread::setThreadParameter(InvalLoader *loader, RequestProcessor *processor,
-      inval_request_storage * requeststorage) {
-    this->invalid_loader = loader;
-    this->processor = processor;
-    this->request_storage = requeststorage;
-  }
-
-  void InvalRetryThread::stop() {
-    CDefaultRunnable::stop();
-    for (int i = 0; i < RETRY_COUNT; ++i) {
-      queue_cond[i].broadcast();
+#include "inval_request_packet_wrapper.hpp"
+#include "inval_group.hpp"
+  namespace tair {
+    InvalRetryThread::InvalRetryThread()
+    {
+      invalid_loader = NULL;
+      setThreadCount(RETRY_COUNT);
+      request_storage = NULL;
     }
-  }
 
-  void InvalRetryThread::run(tbsys::CThread *thread, void *arg) {
-    int index = (int)((long)arg);
-    if (index < 0 || index >= RETRY_COUNT || invalid_loader == NULL ) {
-      return ;
+    InvalRetryThread::~InvalRetryThread()
+    {
     }
-    log_warn("RetryThread %d starts.", index);
 
-    tbsys::CThreadCond *cur_cond = &(queue_cond[index]);
-    tbnet::PacketQueue *cur_queue = &(retry_queue[index]);
+    void InvalRetryThread::setThreadParameter(InvalLoader* invalid_loader, InvalRequestStorage * request_storage)
+    {
+      this->invalid_loader = invalid_loader;
+      this->request_storage = request_storage;
+    }
 
-    int delay_time = index * 3 + 1;
-
-    while (!_stop) {
-      base_packet *bp = NULL;
-      cur_cond->lock();
-      //~ wait until request is available, or stopped.
-      while (!_stop && cur_queue->size() == 0) {
-        cur_cond->wait();
+    void InvalRetryThread::stop()
+    {
+      CDefaultRunnable::stop();
+      for (int i = 0; i < RETRY_COUNT; ++i)
+      {
+        queue_cond[i].broadcast();
       }
-      if (_stop) {
-        cur_cond->unlock();
-        break;
+    }
+
+    void InvalRetryThread::do_retry_commit_request(SharedInfo *shared, int factor, int operation_type, bool merged)
+    {
+      int ret = TAIR_RETURN_SUCCESS;
+      request_inval_packet *packet = NULL;
+      if ((packet = shared->packet) == NULL)
+      {
+        log_error("packet is null.");
+        ret = TAIR_RETURN_FAILED;
       }
 
-      bp = (base_packet*) cur_queue->pop();
-      cur_cond->unlock();
-      int pc = bp->getPCode();
+      vector<TairGroup*>* groups = NULL;
+      bool got = invalid_loader->find_groups(packet->group_name, groups, NULL);
+      if (ret == TAIR_RETURN_SUCCESS && (!got || groups == NULL))
+      {
+        log_error("can't find the group according the group name: %s", packet->group_name);
+        ret = TAIR_RETURN_FAILED;
+      }
 
-      int towait = bp->request_time + delay_time - time(NULL);
-      if (towait > 0) {
-        log_debug("wait for %d seconds to retry in RetryThread %d.", towait, index);
-        TAIR_SLEEP(_stop, towait);
+      if (ret == TAIR_RETURN_SUCCESS)
+      {
+        shared->inc_retry_times();
+        shared->set_request_reference_count(groups->size() * factor);
+        for (size_t i = 0; i < groups->size(); ++i)
+        {
+          (*groups)[i]->commit_request(shared, merged, false);
+        }
+
+        TAIR_INVAL_STAT.statistcs(operation_type, std::string(packet->group_name),
+            packet->area, inval_area_stat::RETRY_EXEC);
+      }
+    }
+
+    void InvalRetryThread::run(tbsys::CThread *thread, void *arg)
+    {
+      int index = (int)((long)arg);
+      if (index < 0 || index >= RETRY_COUNT || invalid_loader == NULL)
+      {
+        return ;
+      }
+      log_warn("RetryThread %d starts.", index);
+
+      tbsys::CThreadCond *cur_cond = &(queue_cond[index]);
+      std::queue<SharedInfo*> *cur_queue = &(retry_queue[index]);
+
+      int delay_time = index * 3 + 1;
+
+      SharedInfo *shared = NULL;
+      while (!_stop)
+      {
+        cur_cond->lock();
+        //~ wait until request is available, or stopped.
+        while (!_stop && cur_queue->size() == 0)
+        {
+          cur_cond->wait();
+        }
         if (_stop)
+        {
+          cur_cond->unlock();
           break;
-      }
+        }
 
-      switch (pc) {
-        case TAIR_REQ_INVAL_PACKET:
-          {
-            request_invalid *req = (request_invalid*) bp;
-            request_invalid *post_req = NULL;
-            processor->process(req, post_req);
-            TAIR_INVAL_STAT.statistcs(inval_stat_helper::INVALID, std::string(req->group_name),
-                req->area, inval_area_stat::RETRY_EXEC);
-            if (post_req != NULL) {
-              if (index < RETRY_COUNT - 1) {
-                log_error("add invalid packet to RetryThread %d", index + 1);
-                add_packet(post_req, index + 1);
-              } else {
-                log_error("invalid RetryFailedFinally, add the packet to the request_storage.");
-                //simply write the request packet to request_storage,
-                //and this operation is always successful.
-                request_storage->write_request((base_packet*) post_req);
-                TAIR_INVAL_STAT.statistcs(inval_stat_helper::INVALID, std::string(req->group_name),
-                    req->area, inval_area_stat::FINALLY_EXEC);
-                post_req = NULL;
-              }
-            }
-            else {
-              log_error("invalid success in RetryThread %d", index);
-            }
-            delete req;
+        shared = cur_queue->front();
+        cur_queue->pop();
+        cur_cond->unlock();
+        int pc = shared->packet->getPCode();
+
+        int towait = shared->packet->request_time + delay_time - time(NULL);
+        if (towait > 0)
+        {
+          TAIR_SLEEP(_stop, towait);
+          if (_stop)
             break;
-          }
-        case TAIR_REQ_HIDE_BY_PROXY_PACKET:
-          {
-            request_hide_by_proxy *req = (request_hide_by_proxy*) bp;
-            request_hide_by_proxy *post_req = NULL;
-            processor->process(req, post_req);
-            TAIR_INVAL_STAT.statistcs(inval_stat_helper::HIDE, std::string(req->group_name),
-                req->area, inval_area_stat::RETRY_EXEC);
-            if (post_req != NULL) {
-              if (index < RETRY_COUNT - 1) {
-                log_error("add hide packet to RetryThread %d", index + 1);
-                add_packet(post_req, index + 1);
-              }
-              else {
-                log_error("prefix hides RetryFailedFinally, write the request packet to `request_storage");
-                //simply write the request packet to request_storage,
-                //and request_storage will free the packet.
-                request_storage->write_request(post_req);
-                TAIR_INVAL_STAT.statistcs(inval_stat_helper::HIDE, std::string(req->group_name),
-                    req->area, inval_area_stat::FINALLY_EXEC);
-              }
+        }
+
+        switch (pc)
+        {
+          case TAIR_REQ_INVAL_PACKET:
+            {
+              do_retry_commit_request(shared, shared->packet->key_count, InvalStatHelper::INVALID, /*merged =*/ false);
+              break;
             }
-            else {
-              log_error("hide success in RetryThread %d", index);
+          case TAIR_REQ_HIDE_BY_PROXY_PACKET:
+            {
+              do_retry_commit_request(shared, shared->packet->key_count, InvalStatHelper::HIDE, /*merged =*/ false);
+              break;
             }
-            delete req;
-            break;
-          }
-        case TAIR_REQ_PREFIX_HIDES_BY_PROXY_PACKET:
-          {
-            request_prefix_hides_by_proxy *req = (request_prefix_hides_by_proxy*) bp;
-            request_prefix_hides_by_proxy *post_req = NULL;
-            processor->process(req, post_req);
-            TAIR_INVAL_STAT.statistcs(inval_stat_helper::PREFIX_HIDE, std::string(req->group_name),
-                req->area, inval_area_stat::RETRY_EXEC);
-            if (post_req != NULL) {
-              if (index < RETRY_COUNT - 1) {
-                log_error("add prefix hides packet to RetryThread %d", index + 1);
-                add_packet(post_req, index + 1);
-              } else {
-                log_error("prefix hides RetryFailedFinally, write the request packet to local storage `request_storage");
-                request_storage->write_request(post_req);
-                TAIR_INVAL_STAT.statistcs(inval_stat_helper::PREFIX_HIDE, std::string(req->group_name),
-                    req->area, inval_area_stat::FINALLY_EXEC);
-              }
-            } else {
-              log_error("prefix hides success in RetryThread %d", index);
+          case TAIR_REQ_PREFIX_HIDES_BY_PROXY_PACKET:
+            {
+              do_retry_commit_request(shared, 1, InvalStatHelper::PREFIX_HIDE, /*merged =*/ true);
+              break;
             }
-            delete req;
-            break;
-          }
-        case TAIR_REQ_PREFIX_INVALIDS_PACKET:
-          {
-            request_prefix_invalids *req = (request_prefix_invalids*) bp;
-            request_prefix_invalids *post_req = NULL;
-            processor->process(req, post_req);
-            TAIR_INVAL_STAT.statistcs(inval_stat_helper::PREFIX_INVALID, std::string(req->group_name),
-                req->area, inval_area_stat::RETRY_EXEC);
-            if (post_req != NULL) {
-              if (index < RETRY_COUNT - 1) {
-                log_error("add prefix invalids packet to RetryThread %d", index + 1);
-                add_packet(post_req, index + 1);
-              } else {
-                log_error("prefix hides RetryFailedFinally, write the request packet to local storage `request_storage");
-                request_storage->write_request(post_req);
-                TAIR_INVAL_STAT.statistcs(inval_stat_helper::PREFIX_INVALID, std::string(req->group_name),
-                    req->area, inval_area_stat::FINALLY_EXEC);
-              }
-            } else {
-              log_error("prefix invalids success in RetryThread %d", index);
+          case TAIR_REQ_PREFIX_INVALIDS_PACKET:
+            {
+              do_retry_commit_request(shared, 1, InvalStatHelper::PREFIX_HIDE, /*merged =*/ true);
+              break;
             }
-            delete req;
-            break;
-          }
-        default:
-          {
-            log_error("unknown packet with code %d", pc);
-            delete bp;
-            break;
-          }
+          default:
+            {
+              log_error("unknown packet with code %d", pc);
+              break;
+            }
+        }
+      }
+      //~ clear the queue when stopped.
+      cur_cond->lock();
+      while (cur_queue->size() > 0)
+      {
+        //write to request_storage
+        SharedInfo *shared = cur_queue->front();
+        cur_queue->pop();
+        if (shared!= NULL && shared->packet != NULL)
+        {
+          shared->set_request_status(CACHED_IN_STORAGE);
+          request_storage->write_request((base_packet*)shared->packet);
+          delete shared;
+        }
+      }
+      cur_cond->unlock();
+      log_warn("RetryThread %d is stopped", index);
+    }
+    void InvalRetryThread::cache_request_packet(SharedInfo *shared)
+    {
+      //the request will be write to `request_storage.
+      //1)  the retry's queue is overflowed;
+      //2)  the retry times were enough.
+      //3)  the retry threads were stop;
+      if (shared != NULL && shared->packet != NULL)
+      {
+        shared->set_request_status(CACHED_IN_STORAGE);
+        request_storage->write_request((base_packet*)shared->packet);
+        delete shared;
       }
     }
-    //~ clear the queue when stopped.
-    cur_cond->lock();
-    while (cur_queue->size() > 0) {
-      delete cur_queue->pop();
-    }
-    cur_cond->unlock();
-    log_warn("RetryThread %d is stopped", index);
-  }
 
-  void InvalRetryThread::add_packet(base_packet *packet, int index) {
-    if (index < 0 || index > RETRY_COUNT - 1 || _stop == true) {
-      log_error("add_packet failed: index: %d, _stop: %d", index, _stop);
-      delete packet;
+    void InvalRetryThread::add_packet(SharedInfo *shared, int index)
+    {
+      if (index < 0 || index >= RETRY_COUNT)
+      {
+        log_error("should not be here, index: %d, mast be in the range of [0, %d]", index, RETRY_COUNT);
+      }
+      else
+      {
+        queue_cond[index].lock();
+        if ((int)retry_queue[index].size() >= MAX_QUEUE_SIZE || _stop)
+        {
+          queue_cond[index].unlock();
+          cache_request_packet(shared);
+        }
+        else
+        {
+          shared->packet->request_time = time(NULL);
+          retry_queue[index].push(shared);
+          queue_cond[index].unlock();
+          queue_cond[index].signal();
+        }
+      }
     }
-    queue_cond[index].lock();
-    if (retry_queue[index].size() >= MAX_QUEUE_SIZE) {
+
+    int InvalRetryThread::retry_queue_size(const int index)
+    {
+      int size = 0;
+      if (index < 0 || index >= RETRY_COUNT || _stop == true)
+      {
+        log_error("failed to retrieve retry_queue_size");
+        return 0;
+      }
+      queue_cond[index].lock();
+      size = retry_queue[index].size();
       queue_cond[index].unlock();
-      log_error("[FATAL ERROR] Retry Queue %d has overflowed, packet is dropped.", index);
-      delete packet;
-      return ;
-    }
-    log_error("add packet to RetryThread %d", index);
-    packet->request_time = time(NULL);
-    retry_queue[index].push(packet);
-    queue_cond[index].unlock();
-    queue_cond[index].signal();
-  }
-  int InvalRetryThread::retry_queue_size(const int index) {
-    int size = 0;
-    if (index < 0 || index >= RETRY_COUNT || _stop == true) {
-      log_error("failed to retrieve retry_queue_size");
-      return 0;
-    }
-    queue_cond[index].lock();
-    size = retry_queue[index].size();
-    queue_cond[index].unlock();
 
-    return size;
+      return size;
+    }
+
+    std::string InvalRetryThread::get_info()
+    {
+      std::stringstream buffer;
+      buffer << " retry thread's count: " << RETRY_COUNT << endl;
+      buffer << " max of queue size: " << MAX_QUEUE_SIZE << endl;
+      for (size_t i = 0; i < (size_t)RETRY_COUNT; ++i)
+      {
+        queue_cond[i].lock();
+        int queue_size = retry_queue[i].size();
+        queue_cond[i].unlock();
+        buffer << " retry thread# " << i << " queue's size: " << queue_size << endl;
+      }
+      return buffer.str();
+    }
   }
-}

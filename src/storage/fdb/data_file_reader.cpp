@@ -7,7 +7,7 @@
  *
  * this class is for reader value from fdb data file
  *
- * Version: $Id$
+ * Version: $Id: data_file_reader.cpp 1011 2012-07-27 09:20:38Z nayan@taobao.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>

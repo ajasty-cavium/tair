@@ -7,7 +7,7 @@
  *
  * conf_server_table_transfer..cpp is a tool to modify the hashtable config server builded
  *
- * Version: $Id$
+ * Version: $Id: conf_server_table_transfer.cpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *      Daoan <daoan@taobao.com>

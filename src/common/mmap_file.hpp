@@ -7,7 +7,7 @@
  *
  * mmap wraps
  *
- * Version: $Id$
+ * Version: $Id: mmap_file.hpp 213 2011-08-24 06:54:25Z zongdai@taobao.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>

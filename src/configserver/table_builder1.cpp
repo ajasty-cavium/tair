@@ -8,7 +8,7 @@
  * table_builder1.cpp is the implement of table build strategy which make the load balance
  * is the first priority
  *
- * Version: $Id$
+ * Version: $Id: table_builder1.cpp 496 2012-01-04 05:28:30Z zongdai $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>

@@ -7,7 +7,7 @@
  *
  * cache stat
  *
- * Version: $Id$
+ * Version: $Id: ldb_cache_stat.cpp 1127 2012-09-17 00:09:36Z nayan@taobao.com $
  *
  * Authors:
  *   nayan <nayan@taobao.com>

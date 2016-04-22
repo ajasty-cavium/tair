@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: mdb_slab_test.cpp 1279 2013-01-04 02:50:08Z dutor $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>
@@ -16,6 +16,7 @@
 #include "mdb_manager.hpp"
 #include "mdb_define.hpp"
 #include "define.hpp"
+#include "data_entry.hpp"
 
 
 using namespace tair;

@@ -25,8 +25,13 @@ namespace tair {
       setPCode(TAIR_REQ_PREFIX_INVALIDS_PACKET);
     }
 
-    request_prefix_invalids(request_prefix_invalids &packet) : request_invalid(packet) {
+    request_prefix_invalids(const request_prefix_invalids &packet)
+      : request_invalid(packet) {
       setPCode(TAIR_REQ_PREFIX_INVALIDS_PACKET);
+    }
+
+    virtual base_packet::Type get_type() {
+      return base_packet::REQ_WRITE;
     }
   };
 }

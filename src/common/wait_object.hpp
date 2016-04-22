@@ -7,7 +7,7 @@
  *
  * wait object used for async communication
  *
- * Version: $Id$
+ * Version: $Id: wait_object.hpp 2256 2014-03-17 08:48:19Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -19,20 +19,21 @@
 
 #include <ext/hash_map>
 #include <tbsys.h>
-#include <tbnet.h>
+
+#include "async_callback_def.hpp"
 #include "base_packet.hpp"
 
 using namespace std;
 using namespace __gnu_cxx;
 
 namespace tair {
+  class response_mc_ops;
    namespace common {
-      typedef int tbnet_pcode_type;
-      const tbnet_pcode_type null_pcode = -1;
+     typedef int tbnet_pcode_type;
+     const tbnet_pcode_type null_pcode = -1;
 
-
-      class wait_object {
-      public:
+     class wait_object {
+     public:
          friend class wait_object_manager;
          wait_object()
           {
@@ -49,14 +50,43 @@ namespace tair {
             init();
          }
 
-         wait_object (int _cmd,void (*_func)(int retcode, void* parg),void *parg)
+         wait_object (int _cmd, callback_put_pt _func, void *parg, uint64_t server_id = 0)
          {
            init();
-           m_callback_func=_func;
-           m_args=parg;
-           m_cmd=_cmd;
+           callback_put = _func; //~ put, remove, etc.
+           m_args = parg;
+           m_cmd = _cmd;
+           data_server_id = server_id;
          }
-         ~wait_object()
+
+         wait_object (int _cmd, callback_mreturn_pt _func, void *parg, uint64_t server_id = 0)
+         {
+           init();
+           callback_mreturn = _func; //~ prefix_puts, prefix_removes, etc.
+           m_args = parg;
+           m_cmd = _cmd;
+           data_server_id = server_id;
+         }
+
+         wait_object (int _cmd, callback_get_pt _func, void *parg, uint64_t server_id = 0)
+         {
+           init();
+           callback_get = _func; //~ prefix_puts, prefix_removes, etc.
+           m_args = parg;
+           m_cmd = _cmd;
+           data_server_id = server_id;
+         }
+
+         wait_object(int _cmd, callback_mc_ops_pt _func, void *args, uint64_t server_id = 0)
+         {
+           init();
+           callback_mc_ops = _func;
+           m_args = args;
+           m_cmd = _cmd;
+           data_server_id = server_id;
+         }
+
+         virtual ~wait_object()
          {
             tbsys::CThreadGuard guard(&mutex);
             if (resp_list != NULL) {
@@ -128,7 +158,7 @@ namespace tair {
             return 0;
          }
          int get_id() const
-          {
+         {
             return id;
          }
          void set_no_free()
@@ -136,17 +166,45 @@ namespace tair {
             resp = NULL;
             resp_list = NULL;
          }
-         bool is_async() { return NULL!=m_callback_func; }
+
+         virtual bool is_async() { return NULL != callback; }
+
          int do_async_response(int error_code)
          {
-           if(m_callback_func)
+           if (callback_put != NULL) //~ on behalf of `remove'
            {
-             m_callback_func(error_code,m_args);
+             callback_put(error_code,m_args);
            }
            return 0;
          }
-          int get_cmd(){return m_cmd;}
-      private:
+
+         int do_async_response(int retcode, const data_entry *key, const data_entry *value) {
+           if (callback_get != NULL) {
+             callback_get(retcode, key, value, m_args);
+           }
+           return 0;
+         }
+
+         int do_async_response(int retcode, const key_code_map_t *key_code_map) {
+           if (callback_mreturn != NULL) {
+             callback_mreturn(retcode, key_code_map, m_args);
+           }
+           return 0;
+         }
+
+         int do_async_response(int retcode, response_mc_ops *resp) {
+           if (callback_mc_ops != NULL) {
+             callback_mc_ops(retcode, resp, m_args);
+           }
+           return 0;
+         }
+
+         int get_cmd(){return m_cmd;}
+
+         uint64_t get_data_server_id() {
+            return data_server_id;
+         }
+      protected:
          int id;
          void init(){
             done_count = 0;
@@ -155,9 +213,11 @@ namespace tair {
             resp_list = NULL;
             except_pcode = null_pcode;
 
-            m_callback_func=NULL;
+            callback=NULL;
             m_args=NULL;
             m_cmd=0;
+
+            data_server_id = 0;
          }
          void done() {
             cond.lock();
@@ -174,10 +234,18 @@ namespace tair {
          vector<base_packet*> *resp_list;
          tbsys::CThreadCond cond;
          int done_count;
-       private: //below is callback function
-         void (*m_callback_func)(int retcode, void* parg);
+       protected: //below is callback function
+         union {
+           callback_put_pt callback; //! for general use, do not call it directly
+           callback_put_pt callback_put;
+           callback_get_pt callback_get;
+           callback_remove_pt callback_remove;
+           callback_mreturn_pt callback_mreturn;
+           callback_mc_ops_pt callback_mc_ops;
+         };
          void* m_args;
          int m_cmd;
+         uint64_t data_server_id;
       };
 
       class wait_object_manager {
@@ -225,9 +293,10 @@ namespace tair {
             add_new_wait_object(cwo);
             return cwo;
          }
-         wait_object* create_wait_object(int cmd,void (*_pfunc)(int retcode, void* parg),void *parg,int timeout=0)
-         {
-           wait_object *cwo = new wait_object(cmd,_pfunc,parg);
+
+         template <typename F>
+         wait_object* create_wait_object(int cmd, F f, void *parg, int timeout = 0, uint64_t server_id = 0) {
+           wait_object *cwo = new wait_object(cmd, f, parg, server_id);
            add_new_wait_object(cwo);
            return cwo;
          }
@@ -238,16 +307,17 @@ namespace tair {
             wait_object_map.erase(cwo->id);
             delete cwo;
          }
+
          void wakeup_wait_object(int id, base_packet *packet)
           {
             tbsys::CThreadGuard guard(&mutex);
             hash_map<int, wait_object*>::iterator it;
             it = wait_object_map.find(id);
-            if (it != wait_object_map.end()) 
+            if (it != wait_object_map.end())
             {
               //now check the object need a async callback.so we just call the obejct's handler.
               wait_object *cwo=it->second;
-              if (packet == NULL) 
+              if (packet == NULL)
               {
                 log_error("[%d] packet is null.", id);
               } else if (!cwo->insert_packet(packet))
@@ -272,12 +342,12 @@ namespace tair {
 
       private:
          void add_new_wait_object(wait_object *cwo)
-          {
-            tbsys::CThreadGuard guard(&mutex);
-            wait_object_seq_id ++;
-            if (wait_object_seq_id == 0) wait_object_seq_id ++;
-            cwo->id = wait_object_seq_id;;
-            wait_object_map[cwo->id] = cwo;
+         {
+           tbsys::CThreadGuard guard(&mutex);
+           wait_object_seq_id ++;
+           if (wait_object_seq_id == 0) wait_object_seq_id ++;
+           cwo->id = wait_object_seq_id;;
+           wait_object_map[cwo->id] = cwo;
          }
 
       private:

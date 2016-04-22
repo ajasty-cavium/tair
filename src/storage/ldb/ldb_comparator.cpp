@@ -7,7 +7,7 @@
  *
  * leveldb storage engine
  *
- * Version: $Id$
+ * Version: $Id: ldb_comparator.cpp 1427 2013-03-20 03:16:19Z yuming $
  *
  * Authors:
  *   nayan <nayan@taobao.com>
@@ -39,7 +39,7 @@ namespace tair
 
       const char* BitcmpLdbComparatorImpl::Name() const
       {
-        return "ldb.bitcmpLdbComparator";
+        return "ldb.LdbComparator";
       }
 
       // skip expired time
@@ -113,7 +113,7 @@ namespace tair
 
       bool BitcmpLdbComparatorImpl::ShouldDrop(const char* key, int64_t sequence, uint32_t will_gc) const
       {
-        if (gc_ == NULL)
+        if (gc_ == NULL || gc_->empty())
         {
           return false;
         }
@@ -165,6 +165,11 @@ namespace tair
         return expired_time > 0 && expired_time < (now > 0 ? now : time(NULL));
       }
 
+      bool BitcmpLdbComparatorImpl::ShouldStopBefore(const leveldb::Slice& start_key, const leveldb::Slice& key) const
+      {
+        return LdbKey::decode_bucket_number_with_key(key.data()) !=
+          LdbKey::decode_bucket_number_with_key(start_key.data());
+      }
 
       const leveldb::Comparator* LdbComparator(LdbGcFactory* gc)
       {

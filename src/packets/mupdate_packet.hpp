@@ -8,7 +8,7 @@
  * multi update packet
  * this packet is for migrate only
  *
- * Version: $Id$
+ * Version: $Id: mupdate_packet.hpp 2685 2014-06-27 10:00:06Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -18,7 +18,7 @@
 #ifndef TAIR_PACKETS_MUPDATE_H
 #define TAIR_PACKETS_MUPDATE_H
 #include "base_packet.hpp"
-#include "update_log.hpp"
+#include "dataserver/update_log.hpp"
 namespace tair {
    class operation_record{
    public:
@@ -61,18 +61,21 @@ namespace tair {
       request_mupdate()
       {
          setPCode(TAIR_REQ_MUPDATE_PACKET);
-         server_flag = 0;
+         server_flag = TAIR_SERVERFLAG_MIGRATE;
          count = 0;
          len = 8;
+         alloc = true;
          key_and_values = NULL;
       }
 
-      request_mupdate(request_mupdate &packet)
+      request_mupdate(const request_mupdate &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_MUPDATE_PACKET);
          server_flag = packet.server_flag;
          count = packet.count;
          len = packet.len;
+         alloc = packet.alloc;
          key_and_values = NULL;
          if (packet.key_and_values != NULL) {
             key_and_values = new tair_operc_vector();
@@ -86,7 +89,7 @@ namespace tair {
 
       ~request_mupdate()
       {
-         if (key_and_values != NULL) {
+         if (key_and_values != NULL && alloc) {
             tair_operc_vector::iterator it;
             for (it=key_and_values->begin(); it!=key_and_values->end(); ++it) {
                delete (*it);
@@ -98,7 +101,12 @@ namespace tair {
          }
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+        // use for migrate, so it is special
+        return base_packet::REQ_SPECIAL;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt8(server_flag);
          output->writeInt32(count);
@@ -117,7 +125,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 8) {
             log_warn( "buffer data too few.");
@@ -148,8 +156,29 @@ namespace tair {
          return true;
       }
 
+      virtual size_t size() const
+      {
+        if (LIKELY(getDataLen() != 0))
+          return getDataLen() + 16; // header 16 bytes
+
+        size_t total = 1 + 4;
+        if (key_and_values != NULL)
+        {
+          tair_operc_vector::iterator it;
+          for (it=key_and_values->begin(); it!=key_and_values->end(); ++it)
+          {
+            operation_record *oprec = (*it);
+            total += 1; // type
+            total += oprec->key->encoded_size();
+            if(1 == oprec->operation_type)
+              total += oprec->value->encoded_size();
+          }
+        }
+        return total + 16; // header 16 bytes
+      }
+
       //add put key and data
-      bool add_put_key_data(const data_entry &key, const data_entry &data) 
+      bool add_put_key_data(const data_entry &key, const data_entry &data)
       {
          uint temp = len +  key.get_size() + 1 + data.get_size();
          if (temp> MAX_MUPDATE_PACKET_SIZE && count >0){
@@ -199,6 +228,7 @@ namespace tair {
    public:
       uint32_t count;
       uint32_t len;
+      bool alloc;
       tair_operc_vector  *key_and_values;
    };
 }

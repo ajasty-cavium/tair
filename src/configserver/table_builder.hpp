@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: table_builder.hpp 1961 2013-11-20 09:57:21Z dutor $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -97,7 +97,7 @@ namespace tair {
         virtual int rebuild_table(const hash_table_type & hash_table_source,
             hash_table_type & hash_table_dest,
             bool no_quick_table = false);
-        virtual void set_available_server(const set <node_info *>&ava_ser);
+        virtual void set_available_server(const node_info_set& ava_ser);
         virtual int is_this_node_OK(server_id_type node_id, int line_num,
             size_t node_idx,
             hash_table_type & hash_table_dest,

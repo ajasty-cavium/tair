@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: server_info.hpp 2922 2014-09-05 08:25:26Z yunhen $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
@@ -17,7 +17,6 @@
 
 #include <algorithm>
 #include <tbsys.h>
-#include <tbnet.h>
 #include <set>
 #include "mmap_file.hpp"
 //#include "wait_object.hpp"
@@ -36,15 +35,17 @@ namespace tair {
       {
         ALIVE = 0,
         DOWN,
-        FORCE_DOWN,
+        STANDBY
       };
         server_info();
        ~server_info();
       void print();
     public:
-        uint64_t server_id;        // ip + port
+      uint64_t server_id;        // ip + port
       uint32_t last_time;
       int8_t status;                // 0 - alive, 1 - down
+      uint32_t standby_version;
+      uint32_t standby_time;
       group_info *group_info_data;
       node_info *node_info_data;
     };

@@ -7,7 +7,7 @@
  *
  * this class is for reader value from fdb data file
  *
- * Version: $Id$
+ * Version: $Id: data_file_reader.hpp 28 2010-09-19 05:18:09Z ruohai@taobao.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>

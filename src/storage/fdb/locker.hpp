@@ -7,15 +7,15 @@
  *
  * lock array support
  *
- * Version: $Id$
+ * Version: $Id: locker.hpp 1279 2013-01-04 02:50:08Z dutor $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
  *     - initial release
  *
  */
-#ifndef TAIR_LOCKER_HPP
-#define TAIR_LOCKER_HPP
+#ifndef TAIR_KDB_LOCKER_HPP
+#define TAIR_KDB_LOCKER_HPP
 
 #include <pthread.h>
 #include "log.hpp"

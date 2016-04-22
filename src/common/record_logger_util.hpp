@@ -7,7 +7,7 @@
  *
  * some common RecordLogger implementation
  *
- * Version: $Id$
+ * Version: $Id: record_logger_util.hpp 1166 2012-09-25 01:09:53Z nayan@taobao.com $
  *
  * Authors:
  *   nayan <nayan@taobao.com>

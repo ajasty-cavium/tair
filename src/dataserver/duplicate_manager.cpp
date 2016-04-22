@@ -7,13 +7,14 @@
  *
  * duplicate_manager.cpp is to performe the duplicate func when copy_count > 1
  *
- * Version: $Id$
+ * Version: $Id: duplicate_manager.cpp 1765 2013-08-15 06:11:07Z dutor $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
  *
  */
 #include "duplicate_manager.hpp"
+#include <easy_io.h>
 namespace tair{
    bucket_waiting_queue::bucket_waiting_queue(duplicate_sender_manager* psm, uint32_t bucket_number)
    {
@@ -25,7 +26,7 @@ namespace tair{
    void bucket_waiting_queue::push(request_duplicate_packet& p_packet, uint64_t server_id)
    {
       tbsys::CThreadGuard guard(&mutex);
-      if (p_packet == NULL) return;
+      if (p_packet == 0) return;
       p_packet->packet_id = atomic_add_return(1, &packet_id_creater);
       packets_queue[server_id].push(p_packet);
       return;
@@ -68,6 +69,9 @@ namespace tair{
    }
    bool bucket_waiting_queue::send(int64_t now)
    {
+     if (!psm->eio.started) {
+       easy_io_start(&psm->eio);
+     }
       bool empty = true;
       tbsys::CThreadGuard guard(&mutex);
       map<uint64_t, packets_queue_type>::iterator it = packets_queue.begin();
@@ -83,7 +87,7 @@ namespace tair{
          log_debug("will send packet pid = %d", packet->packet_id);
          PROFILER_START("do duplicate");
          PROFILER_BEGIN("send duplicate packet");
-         if (psm->conn_mgr->sendPacket(it->first, packet, NULL, NULL, true) == false) {
+         if (easy_helper::easy_async_send(&psm->eio, it->first, packet, NULL, &psm->handler, psm->dup_timeout) == EASY_ERROR) {
             log_debug("send duplicate packet failed: %s", tbsys::CNetUtil::addrToString(it->first).c_str());
             delete packet;
          } else {
@@ -120,15 +124,15 @@ namespace tair{
    {
    }
 
-
-   duplicate_sender_manager::duplicate_sender_manager(tbnet::Transport *transport,tair_packet_streamer *streamer, table_manager* table_mgr)
+   duplicate_sender_manager::duplicate_sender_manager(table_manager* table_mgr)
    {
-      this->table_mgr = table_mgr;
-      conn_mgr = new tbnet::ConnectionManager(transport, streamer, this);
-      conn_mgr->setDefaultQueueTimeout(0 , MISECONDS_BEFOR_SEND_RETRY/2000);
-      have_data_to_send = 0;
-      max_queue_size = 0;
-      this->start();
+     easy_helper::init_handler(&handler, this);
+     handler.process = packet_handler_cb;
+     easy_io_create(&eio, 1);
+     this->table_mgr = table_mgr;
+     have_data_to_send = 0;
+     max_queue_size = 0;
+     this->start();
    }
 
    duplicate_sender_manager::~duplicate_sender_manager()
@@ -140,8 +144,11 @@ namespace tair{
          int size = it->second.size();
          if(size) log_error("data not be duplicated:bucket id =%d  num = %d", it->first, size);
       }
-
-      delete conn_mgr;
+      if (eio.started) {
+        easy_io_stop(&eio);
+        easy_io_wait(&eio);
+        easy_io_destroy(&eio);
+      }
    }
    void duplicate_sender_manager::do_hash_table_changed()
    {
@@ -178,8 +185,12 @@ namespace tair{
 
    }
 
-   int duplicate_sender_manager::duplicate_data(int area, const data_entry* key, const data_entry* value, int expire_time,
-                                                 int bucket_number, const vector<uint64_t>& des_server_ids, base_packet *, int)
+   int duplicate_sender_manager::duplicate_data(int area,
+       const data_entry* key,
+       const data_entry* value,
+       int bucket_number,
+       const vector<uint64_t>& des_server_ids,
+       easy_request_t *)
    {
       if (!is_bucket_available(bucket_number))
       {
@@ -188,7 +199,7 @@ namespace tair{
       }
 
       if (des_server_ids.empty()) return 0;
-      bucket_waiting_queue::request_duplicate_packet tmp_packet(new request_duplicate());
+      bucket_waiting_queue::request_duplicate_packet tmp_packet(new bucket_waiting_queue::request_duplicate_ptr());
       tmp_packet->area = area;
       tmp_packet->key = *key;
       tmp_packet->key.server_flag = TAIR_SERVERFLAG_DUPLICATE;
@@ -234,10 +245,15 @@ namespace tair{
       return 0;
    }
 
-  int duplicate_sender_manager::direct_send(int area, const data_entry* key, const data_entry* value, int expire_time,
-            int bucket_number, const vector<uint64_t>& des_server_ids, uint32_t max_packet_id)
+  int duplicate_sender_manager::direct_send(easy_request_t *,
+      int area,
+      const data_entry* key,
+      const data_entry* value,
+      int bucket_number,
+      const vector<uint64_t>& des_server_ids,
+      uint32_t max_packet_id)
   {
-     return duplicate_data(area,key,value,expire_time,bucket_number,des_server_ids,NULL,0);
+     return duplicate_data(area,key,value,bucket_number,des_server_ids,NULL);
   }
 
    bool duplicate_sender_manager::has_bucket_duplicate_done(int bucketNumber)
@@ -284,26 +300,23 @@ namespace tair{
          usleep(SLEEP_MISECONDS);
       }
    }
-   tbnet::IPacketHandler::HPRetCode duplicate_sender_manager::handlePacket(tbnet::Packet *packet, void *args)
+   int duplicate_sender_manager::packet_handler(easy_request_t *r)
    {
-      UNUSED(args);
-      if (!packet->isRegularPacket()) {
-         tbnet::ControlPacket *cp = (tbnet::ControlPacket*)packet;
-         log_error("ControlPacket, cmd:%d", cp->getCommand());
-         have_data_to_send = 1;
-         return tbnet::IPacketHandler::FREE_CHANNEL;
-      }
-      int pcode = packet->getPCode();
-      log_debug("================= get duplicate response, pcode: %d", pcode);
-      if (TAIR_RESP_DUPLICATE_PACKET == pcode) {
-         response_duplicate* resp = (response_duplicate*)packet;
-         do_duplicate_response(resp->bucket_id, resp->server_id, resp->packet_id);
-         have_data_to_send = 1;
-      } else {
-         log_warn("unknow packet! pcode: %d", pcode);
-      }
-      packet->free();
-
-      return tbnet::IPacketHandler::KEEP_CHANNEL;
+     int rc = r->ipacket != NULL ? EASY_OK : EASY_ERROR;
+     base_packet *packet = (base_packet*)r->ipacket;
+     if (rc == EASY_ERROR) {
+       log_error("duplicate to %s timeout", easy_helper::easy_connection_to_str(r->ms->c).c_str());
+       have_data_to_send = 1;
+     }
+     int pcode = packet->getPCode();
+     if (TAIR_RESP_DUPLICATE_PACKET == pcode) {
+       response_duplicate* resp = (response_duplicate*)packet;
+       do_duplicate_response(resp->bucket_id, resp->server_id, resp->packet_id);
+       have_data_to_send = 1;
+     } else {
+       log_warn("unknow packet! pcode: %d", pcode);
+     }
+     easy_session_destroy(r->ms);
+     return rc;
    }
 }

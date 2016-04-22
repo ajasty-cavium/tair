@@ -7,7 +7,7 @@
  *
  * dump request packet
  *
- * Version: $Id$
+ * Version: $Id: dump_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -35,7 +35,7 @@ namespace tair {
       ~request_dump() {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(info_set.size());
          if (info_set.size() > 0) {
@@ -50,7 +50,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          int size = input->readInt32();
          info_set.clear();
@@ -62,6 +62,10 @@ namespace tair {
             info_set.insert(info);
          }
          return true;
+      }
+
+      virtual base_packet::Type get_type() {
+        return base_packet::REQ_READ;
       }
 
       void add_dump_info(dump_meta_info info)

@@ -15,7 +15,8 @@
 
 #include "mdb_manager.hpp"
 #include "libmdb_c.hpp"
-
+#include "data_entry.hpp"
+#include <limits>
 using namespace tair;
 
 static void mdb_assign_static_param(const mdb_param_t *param);
@@ -39,6 +40,7 @@ mdb_t mdb_init(const mdb_param_t *param) {
     delete db;
     return NULL;
   }
+  db->set_bucket_count(1023);
   //TAIR_STAT.set_storage_manager(db);
   //TAIR_STAT.start();
   return db;
@@ -98,7 +100,8 @@ int mdb_add_count(mdb_t db, int area, const data_entry_t *key, int count,
   data_entry mkey(key->data, key->size, false);
   mkey.merge_area(area);
   mdb_manager *_db = reinterpret_cast<mdb_manager*>(db);
-  return _db->add_count(0, mkey, count, init_value, true, expire, *result);
+  return _db->add_count(0, mkey, count, init_value, std::numeric_limits<int>::min(),
+      std::numeric_limits<int>::max(), expire, *result);
 }
 
 bool mdb_lookup(mdb_t db, int area, const data_entry_t *key) {
@@ -117,15 +120,15 @@ void mdb_get_stat(mdb_t db, int area, mdb_stat_t *stat) {
   mdb_manager *_db = reinterpret_cast<mdb_manager*>(db);
   mdb_area_stat _stat;
   _db->get_stat(area, &_stat);
-  stat->quota = _stat.quota;
-  stat->data_size = _stat.data_size;
-  stat->space_usage = _stat.space_usage;
-  stat->item_count = _stat.item_count;
-  stat->hit_count = _stat.hit_count;
-  stat->get_count = _stat.get_count;
-  stat->put_count = _stat.put_count;
-  stat->remove_count = _stat.remove_count;
-  stat->evict_count = _stat.evict_count;
+  stat->quota = _stat.get_quota();
+  stat->data_size = _stat.get_data_size();
+  stat->space_usage = _stat.get_space_usage();
+  stat->item_count = _stat.get_item_count();
+  stat->hit_count = _stat.get_hit_count();
+  stat->get_count = _stat.get_get_count();
+  stat->put_count = _stat.get_put_count();
+  stat->remove_count = _stat.get_remove_count();
+  stat->evict_count = _stat.get_evict_count();
 }
 
 void mdb_set_quota(mdb_t db, int area, uint64_t quota) {
@@ -154,6 +157,15 @@ void mdb_log_level(const char *level) {
 }
 
 void mdb_assign_static_param(const mdb_param_t *param) {
+  if (param->use_check_thread) {
+    mdb_param::use_check_thread = true;
+  } else {
+    mdb_param::use_check_thread = false;
+  }
+  mdb_param::inst_shift = param->inst_shift;
+  if (param->lock_pshared) {
+    mdb_param::lock_pshared = true;
+  }
   if (param->mdb_type != NULL) {
     mdb_param::mdb_type = param->mdb_type;
   }
@@ -162,6 +174,7 @@ void mdb_assign_static_param(const mdb_param_t *param) {
   }
   if (param->size != 0) {
     mdb_param::size = param->size;
+    mdb_param::size >>= mdb_param::inst_shift;
   }
   if (param->slab_base_size != 0) {
     mdb_param::slab_base_size = param->slab_base_size;
@@ -174,6 +187,7 @@ void mdb_assign_static_param(const mdb_param_t *param) {
   }
   if (param->hash_shift != 0) {
     mdb_param::hash_shift = param->hash_shift;
+    mdb_param::hash_shift -= mdb_param::inst_shift;
   }
   if (param->chkexprd_time_low != 0) {
     mdb_param::chkexprd_time_low = param->chkexprd_time_low;
@@ -186,5 +200,11 @@ void mdb_assign_static_param(const mdb_param_t *param) {
   }
   if (param->chkslab_time_high != 0) {
     mdb_param::chkslab_time_high = param->chkslab_time_high;
+  }
+  if (param->check_granularity != 0) {
+    mdb_param::check_granularity = param->check_granularity;
+  }
+  if (param->check_granularity_factor != 0) {
+    mdb_param::check_granularity_factor = param->check_granularity_factor;
   }
 }

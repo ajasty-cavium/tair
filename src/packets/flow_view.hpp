@@ -6,26 +6,30 @@
 
 namespace tair {
 
-class flow_view_request : public base_packet 
+class flow_view_request : public base_packet
 {
  public:
   flow_view_request()
   {
     setPCode(TAIR_REQ_FLOW_VIEW);
   }
- 
-  size_t size() 
+
+  virtual size_t size() const
   {
-    return 4 + 16; // 16bytes tbnet packet header
+    return 4 + 16; // 16bytes packet header
   }
 
-  bool encode(tbnet::DataBuffer *output)
+  virtual base_packet::Type get_type() {
+    return base_packet::REQ_SPECIAL;
+  }
+
+  bool encode(DataBuffer *output)
   {
     output->writeInt32(ns);
     return true;
   }
 
-  bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) 
+  bool decode(DataBuffer *input, PacketHeader *header)
   {
     if (header->_dataLen < 4)
       return false;
@@ -44,6 +48,8 @@ class flow_view_request : public base_packet
   }
 
  private:
+  flow_view_request(const flow_view_request&);
+ private:
   uint32_t ns;
 };
 
@@ -54,13 +60,17 @@ class flow_view_response : public base_packet
   {
     setPCode(TAIR_RESP_FLOW_VIEW);
   }
- 
-  size_t size() 
+
+  virtual size_t size() const
   {
-    return 28 + 16; // 16bytes tbnet packet header
+    return 28 + 16; // 16bytes packet header
   }
 
-  bool encode(tbnet::DataBuffer *output)
+  virtual base_packet::Type get_type() {
+    return base_packet::RESP_COMMON;
+  }
+
+  bool encode(DataBuffer *output)
   {
     output->writeInt32(rate.in);
     output->writeInt32(rate.in_status);
@@ -72,7 +82,7 @@ class flow_view_response : public base_packet
     return true;
   }
 
-  bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header) 
+  bool decode(DataBuffer *input, PacketHeader *header)
   {
     if (header->_dataLen < 28)
       return false;
@@ -91,11 +101,13 @@ class flow_view_response : public base_packet
     this->rate = rate;
   }
 
-  tair::stat::Flowrate getFlowrate() 
+  tair::stat::Flowrate getFlowrate()
   {
     return this->rate;
   }
 
+ private:
+  flow_view_response(const flow_view_response&);
  private:
   tair::stat::Flowrate rate;
 };

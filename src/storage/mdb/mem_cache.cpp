@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: mem_cache.cpp 2935 2014-09-09 09:35:24Z yunhen $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>
@@ -14,8 +14,11 @@
  */
 #include "mem_cache.hpp"
 #include "tblog.h"
-#include "mdb_manager.hpp"
+#include "mdb_instance.hpp"
 #include <string.h>
+#include <vector>
+
+//#define DEBUG_MEM_MERGE 1
 
 namespace tair {
 
@@ -29,9 +32,9 @@ namespace tair {
       reinterpret_cast <
       mdb_cache_info * >(this_mem_pool->get_pool_addr() +
                          mem_pool::MEM_POOL_METADATA_LEN);
-    char *area_timestamp_start_addr = this_mem_pool->get_pool_addr() +
-         mem_pool::MDB_STATINFO_START + sizeof(mdb_area_stat) * TAIR_MAX_AREA_COUNT;
+    char *area_timestamp_start_addr = this_mem_pool->get_pool_addr() + mem_pool::MDB_AREA_TIME_STAMP_START;
     area_timestamp = reinterpret_cast<uint32_t *> (area_timestamp_start_addr);
+    bucket_timestamp = reinterpret_cast<uint32_t*> (this_mem_pool->get_pool_addr() + mem_pool::MDB_BUCKET_TIME_STAMP_START);
 
     if(cache_info->inited != 1)
     {
@@ -40,8 +43,12 @@ namespace tair {
       cache_info->factor = factor;
       //init the timestamp
       memset(area_timestamp, 0, sizeof(uint32_t) * TAIR_MAX_AREA_COUNT);
+      memset(bucket_timestamp, 0, sizeof(uint32_t) * TAIR_MAX_BUCKET_NUMBER);
 
-      slab_initialize();
+      if (!slab_initialize()) {
+        log_error("initialize slabs failed");
+        return false;
+      }
     }
     else
     {
@@ -136,7 +143,7 @@ namespace tair {
   bool mem_cache::is_quota_exceed(int area)
   {
     //return false; //for debug
-    return manager->is_quota_exceed(area);
+    return instance->is_quota_exceed(area);
   }
 
   void mem_cache::calc_slab_balance_info(std::map<int, int> &adjust_info)
@@ -166,7 +173,7 @@ namespace tair {
 
     evict_ratio = should_have_no / crrnt_no;
 
-    TBSYS_LOG(WARN, "should_total:%f,crrnt_no:%f,evict_ratio:%f",
+    log_warn("overall: items + evicts = %.0f, items = %.0f, evict_ratio = %f",
               should_have_no, crrnt_no, evict_ratio);
 
     for(vector<slab_manager *>::iterator it = slab_managers.begin();
@@ -181,19 +188,27 @@ namespace tair {
       int need_page =
         (::abs(need_count) + (*it)->per_slab - 1) / (*it)->per_slab;
       need_page = need_count > 0 ? need_page : -need_page;
+      /*
+       * `need_page` less than zero indicates that evicting in this slab
+       * happens less frequently, thus you may squeeze this slab when memory
+       * is insufficient.
+       */
 
-      TBSYS_LOG(WARN,
-                "now:%lu,evict:%lu,should:%f,final_count:%d,need_count:%d,need_page:%d",
-                (*it)->item_total_count, (*it)->evict_total_count,
-                should_have_no, final_count, need_count, need_page);
+      /*
+       * also note that `evict_total_count` is increased only when `alloc_page` failed.
+       */
+
+      log_warn("slab %d: items = %lu, evicts = %lu, need_count = %d, need_page = %d",
+                (*it)->slab_id, (*it)->item_total_count, (*it)->evict_total_count, need_count, need_page);
 
       adjust_info.insert(make_pair<int, int>((*it)->slab_id, need_page));
 
       need_alloc_page += need_count > 0 ? need_page : 0;
     }
 
-    if(need_alloc_page <= this_mem_pool->get_free_pages_num()) {
-      for(map<int, int>::iterator it = adjust_info.begin();
+    if (need_alloc_page <= this_mem_pool->get_free_pages_num()) {
+      //~ weird, but page pool has enough free pages, need not squeeze
+      for (map<int, int>::iterator it = adjust_info.begin();
           it != adjust_info.end(); ++it) {
         if(it->second < 0) {
           it->second = 0;
@@ -203,7 +218,9 @@ namespace tair {
     }
     for(map<int, int>::iterator it = adjust_info.begin();
         it != adjust_info.end(); ++it) {
-      TBSYS_LOG(WARN, " (%d) : %d", it->first, it->second);
+      if (it->second != 0) {
+        log_warn("slab %d needs %d page(s)", it->first, it->second);
+      }
     }
 
     return;
@@ -219,44 +236,38 @@ namespace tair {
     return;
   }
 
-  void mem_cache::keep_area_quota(int area, uint64_t exceed)
+  bool mem_cache::keep_area_quota(int area, uint64_t &exceeded_bytes)
   {
     assert(area >= 0 && area < TAIR_MAX_AREA_COUNT);
 
-    uint64_t exceed_bytes = exceed;
-    bool first_round = true;
+    bool no_space_to_release = true;
 
-    while(exceed_bytes > 0) {
-
-      for(vector<slab_manager *>::iterator it = slab_managers.begin();
-          it != slab_managers.end(); ++it) {
-        if((*it)->this_item_list[area].item_head == 0
-           || (*it)->this_item_list[area].item_tail == 0) {
-          // this slab have no mdb_item of this area
-          continue;
-        }
-        if((*it)->item_count[area] < static_cast<uint32_t> ((*it)->per_slab) && first_round) {        //lower than one page
-          TBSYS_LOG(DEBUG, "just one page");
-          continue;
-        }
-
-        //ok,we will delete one mdb_item
-        mdb_item *item = id_to_item((*it)->this_item_list[area].item_tail);
-        if (exceed_bytes >= (item->key_len + item->data_len)) {
-          exceed_bytes -= (item->key_len + item->data_len);
-        } else {
-          exceed_bytes = 0;
-        }
-        manager->__remove(item);
-
-        if(exceed_bytes <= 0) {
-          break;
-        }
+    for (vector<slab_manager *>::iterator it = slab_managers.begin();
+        it != slab_managers.end(); ++it) {
+      if((*it)->this_item_list[area].item_head == 0
+          || (*it)->this_item_list[area].item_tail == 0) {
+        // this slab have no mdb_item of this area
+        continue;
       }
 
-      first_round = false;
+      mdb_item *item = (*it)->id_to_item((*it)->this_item_list[area].item_tail);
+      if (exceeded_bytes >= (uint64_t)(item->key_len + item->data_len)) {
+        exceeded_bytes -= (item->key_len + item->data_len);
+      } else {
+        exceeded_bytes = 0;
+      }
+      instance->__remove(item);
+      no_space_to_release = false;
+
+      if(exceeded_bytes <= 0) {
+        break;
+      }
     }
 
+    if (no_space_to_release) {
+      return false;
+    }
+    return true;
   }
 
   uint64_t mem_cache::get_item_head(int slab_id, int area)
@@ -270,7 +281,7 @@ namespace tair {
 
   void mem_cache::display_statics()
   {
-    TBSYS_LOG(WARN, "total slab : %u", slab_managers.size());
+    TBSYS_LOG(WARN, "total slab : %lu", slab_managers.size());
 
     for(vector<slab_manager *>::iterator it = slab_managers.begin();
         it != slab_managers.end(); ++it) {
@@ -281,14 +292,11 @@ namespace tair {
 
   mem_cache::slab_manager * mem_cache::get_slabmng(int size)
   {
-    slab_manager *mgr = NULL;
-    for (size_t i = 0; i < slab_managers.size(); ++i) {
-      if (slab_managers[i]->slab_size >= size) {
-        mgr = slab_managers[i];
-        break;
-      }
+    int target_slab_id = find_target_slab(size);
+    if (LIKELY(target_slab_id < (int)slab_managers.size())) {
+      return slab_managers[target_slab_id];
     }
-    return mgr;
+    return NULL;
   }
 
   bool mem_cache::slab_initialize()
@@ -340,14 +348,18 @@ namespace tair {
       TBSYS_LOG(DEBUG, "slab: id:%d,size:%d,per_slab:%d", i, start,
                 slabmng->per_slab);
       //prealloc
-      slabmng->pre_alloc(1);
+      if (slabmng->pre_alloc(1) < 1) {
+        log_error("init slab[%d] failed: need more memory or less instances", slabmng->slab_id);
+        return false;
+      }
+      slab_managers.push_back(slabmng);
+      slab_size.push_back(start);
 
       //next slab
       next_slab_addr +=
         slabmng->partial_pages_bucket_no() * sizeof(uint32_t) +
         sizeof(slab_manager);
       start = ALIGN((int) (start * cache_info->factor));
-      slab_managers.push_back(slabmng);
       total_size += sizeof(slab_manager);
       total_size += slabmng->partial_pages_bucket_no() * sizeof(uint32_t);
 
@@ -356,9 +368,10 @@ namespace tair {
     TBSYS_LOG(DEBUG, "total_size:%d,meta:%d", total_size,
               mem_cache::MEMCACHE_META_LEN);
     cache_info->max_slab_id = i - 1;
-    /*TODO last slab (page size) */
+
     return true;
   }
+
   bool mem_cache::get_slab_info()
   {
     char *next_slab_addr =
@@ -370,10 +383,219 @@ namespace tair {
       slabmng->cache = this;
       slabmng->partial_pages =reinterpret_cast< uint32_t *>(next_slab_addr + sizeof(slab_manager));
       slab_managers.push_back(slabmng);
+      slab_size.push_back(slabmng->slab_size);
       next_slab_addr += slabmng->partial_pages_bucket_no() * sizeof(uint32_t) +
         sizeof(slab_manager);
     }
     return true;
+  }
+
+  bool mem_cache::is_need_mem_merge(slab_manager *manager)
+  {
+    int partial_page_counts = manager->item_total_count - manager->full_pages_no * manager->per_slab;
+    int min_part_pages_no = (int)((partial_page_counts + manager->per_slab - 1) / manager->per_slab);
+    return (partial_page_counts > 1 && manager->partial_pages_no > min_part_pages_no);
+  }
+ 
+  void mem_cache::copy_item(mdb_item *to_item, mdb_item *from_item)
+  {
+    // item_id partial
+    to_item->prefix_size = from_item->prefix_size;
+    to_item->low_hash    = from_item->low_hash;
+    to_item->flags       = from_item->flags;
+
+   to_item->h_next = from_item->h_next;
+    to_item->prev = from_item->prev;
+    to_item->next = from_item->next;
+
+    to_item->exptime     = from_item->exptime;
+    to_item->key_len     = from_item->key_len;
+    to_item->data_len    = from_item->data_len;
+    to_item->update_time = from_item->update_time;
+    to_item->version     = from_item->version;
+
+    // copy data
+    memcpy(to_item->data, from_item->data, from_item->key_len + from_item->data_len);
+  }
+
+  bool mem_cache::do_slab_memory_merge(volatile bool &stopped, slab_manager *manager)
+  {
+    int partial_page_counts = manager->item_total_count - manager->full_pages_no * manager->per_slab;
+    int min_part_pages_no = (int)((partial_page_counts + manager->per_slab - 1) / manager->per_slab);
+    int need_free_count = manager->partial_pages_no - min_part_pages_no;
+    int current_free_count = 0;
+
+    // get partial pages vector
+    std::vector<int> partial_pages;
+    int buck_idx = manager->first_partial_page_index;
+    for (; buck_idx < manager->partial_pages_bucket_num; ++buck_idx) {
+      uint32_t page_id = manager->partial_pages[buck_idx];
+      while (page_id != 0) {
+        partial_pages.push_back(page_id);
+        page_info *info = (page_info *)(this_mem_pool->index_to_page(page_id));
+        TBSYS_LOG(INFO, "found partial pages, id: %d, bucket idx:%d, free_nr: %d", page_id, buck_idx, info->free_nr);
+        page_id = info->next;
+      }
+    }
+    TBSYS_LOG(INFO, "partial pages is %d, we found %d", manager->partial_pages_no, (int)partial_pages.size());
+
+    if (partial_pages.empty()) {
+      return false;
+    }
+
+    int first_partial_page_id = partial_pages[0];
+    partial_pages.erase(partial_pages.begin());
+
+    int last_partial_page_id = partial_pages.back();
+    partial_pages.pop_back();
+
+    // find used item offset
+    uint32_t used_item_page_off = 0;
+    int move_count = 0;
+    while (!stopped && current_free_count < need_free_count && ++move_count < mdb_param::mem_merge_move_count) {
+      // 1. get old item from last page
+      mdb_item *from_item = manager->get_used_item_by_page_id(last_partial_page_id, used_item_page_off);
+      // update item offset for next find
+      if (from_item == NULL || from_item->page_id != last_partial_page_id || from_item->slab_id != manager->slab_id) {
+        page_info *error_page = PAGE_INFO(this_mem_pool->index_to_page(last_partial_page_id));
+        TBSYS_LOG(ERROR, "page_off_idx(%u) found error, item addr: %p", used_item_page_off, from_item);
+        TBSYS_LOG(ERROR, "error page id: %u, free_item: %d, used_item: %d",
+            error_page->id, error_page->free_nr, manager->per_slab - error_page->free_nr);
+        TBSYS_LOG(WARN, "cannot found any used item in this page, do nothing and return.");
+        return false;
+      }
+      page_info *check_page = PAGE_INFO(this_mem_pool->index_to_page(last_partial_page_id));
+      TBSYS_LOG(INFO, "page_off_idx(%u) found, item addr: %p", used_item_page_off, from_item);
+      TBSYS_LOG(INFO, "check page id: %u, free_item: %d, used_item: %d",
+          check_page->id, check_page->free_nr, manager->per_slab - check_page->free_nr);
+
+      used_item_page_off = from_item->page_off + 1;
+
+      // 2. alloc new mdb_item from first partial page
+      bool is_link_full = false;
+      mdb_item *to_item = manager->alloc_item_from_page(first_partial_page_id, is_link_full);
+      if (is_link_full) {
+        ++current_free_count;
+        if (!partial_pages.empty()) {
+          first_partial_page_id = partial_pages[0];
+          partial_pages.erase(partial_pages.begin());
+        } else {
+          TBSYS_LOG(INFO, "partial_pages is empty, last copy.");
+        }
+      }
+
+      // 3. copy data and other control info
+      copy_item(to_item, from_item);
+
+      // 4. change `cache_hashmap` pointer of old item
+      if (!instance->get_cache_hashmap()->change_item_pointer(to_item, from_item)) {
+        TBSYS_LOG(ERROR, "Hashmap pointer Error, this slab manager have not partial page!");
+        return false;
+      }
+
+      // 5. change `this_item_list` pointer of new item
+      if (!manager->change_item_list_pointer(to_item, from_item)) {
+        TBSYS_LOG(ERROR, "this_item_list pointer Error, this slab manager have not partial page!");
+        return false;
+      }
+
+      // 6. free old item in page(maybe free page)
+      if (manager->free_item_except_area_list(from_item) == 1) {
+        ++current_free_count;
+        used_item_page_off = 0;
+        // update last partial page id
+        last_partial_page_id = partial_pages.back();
+        partial_pages.pop_back();
+      }
+    }
+
+    return true;
+  }
+
+  void mem_cache::slab_memory_merge(volatile bool &stopped, pthread_mutex_t *mdb_lock)
+  {
+    double all_merge_time = 0;
+    double max_merge_time = 0.0;
+    double min_merge_time = 9999.0;
+
+    pthread_mutex_lock(mdb_lock);
+    
+    for (size_t slab_idx = 0; slab_idx < slab_managers.size(); ++slab_idx) {
+      slab_manager *manager = slab_managers[slab_idx];
+      if (!is_need_mem_merge(manager)) {
+        continue;
+      }
+
+      int partial_page_counts = manager->item_total_count - manager->full_pages_no * manager->per_slab;
+      int min_part_pages_no = (int)((partial_page_counts + manager->per_slab - 1) / manager->per_slab);
+
+      TBSYS_LOG(INFO, "mdb instance[%d] running memory merge now ...", instance->instance_id());
+      TBSYS_LOG(INFO, "slab_manager[%d] running memory merge, It's item is %lu, full pages: %d, one page has %d items",
+                      manager->slab_id, manager->item_total_count, manager->full_pages_no, manager->per_slab);
+
+      TBSYS_LOG(INFO, "slab_manager[%d] running memory merge, It's partial_pages_no is %d, but needs min_pages_no is %d",
+                      manager->slab_id, manager->partial_pages_no, min_part_pages_no);
+
+      double start_time = get_timespec();
+
+      if (!do_slab_memory_merge(stopped, manager)) {
+        TBSYS_LOG(ERROR, "slab_manager[%d] disruption!!", manager->slab_id);
+      }
+
+      double end_time = get_timespec();
+      double used_time = end_time - start_time;
+
+      all_merge_time += used_time;
+      if (max_merge_time < used_time) {
+        max_merge_time = used_time;
+      }
+      if (min_merge_time > used_time) {
+        min_merge_time = used_time;
+      }
+      TBSYS_LOG(WARN, "slab_manager[%d] merge used %lf ms", manager->slab_id, used_time * 1000);
+
+      if (stopped) {
+        break;
+      }
+
+#ifdef DEBUG_MEM_MERGE
+      TBSYS_LOG(ERROR, "---------------- manager count: %lu ---------------", manager->item_total_count);
+      int area_item_count = 0;
+      for (int i = 0; i < TAIR_MAX_AREA_COUNT; ++i) {
+        uint64_t item_id = (&(manager->this_item_list[i]))->item_head;
+        while (item_id) {
+          mdb_item *item = id_to_item(item_id);
+          item_id = item->next;
+          ++area_item_count;
+        }
+      }
+      TBSYS_LOG(ERROR, "---------------- all area count: %d ---------------", area_item_count);
+
+      TBSYS_LOG(ERROR, "---------------- hashmap record count: %d ---------------", instance->get_cache_hashmap()->get_item_count());
+      int hash_item_count = 0;
+      uint64_t *hashmap = instance->get_cache_hashmap()->get_hashmap();
+      int bucket_size = instance->get_cache_hashmap()->get_bucket_size();
+      for (int i = 0; i < bucket_size;++i) {
+        uint64_t item_id = hashmap[i];
+        while (item_id) {
+          ++hash_item_count;
+          mdb_item *item = id_to_item(item_id);
+          item_id = item->h_next;
+        }
+      }
+      TBSYS_LOG(ERROR, "---------------- found hashmap count: %d ---------------", hash_item_count);
+#endif
+    }
+
+    pthread_mutex_unlock(mdb_lock);
+
+    if (min_merge_time > max_merge_time) {
+      min_merge_time = max_merge_time;
+    }
+    if (max_merge_time != 0) {
+      TBSYS_LOG(WARN, "instance[%d] finished, max: %lf ms  min: %lf ms",
+          instance->instance_id(), max_merge_time * 1000, min_merge_time * 1000);
+    }
   }
 
 
@@ -490,8 +712,9 @@ namespace tair {
     item = id_to_item(item_id);
     assert(item != 0);
 
-
-    info->free_head = item->h_next;
+    if (info->free_nr != 0) {
+      info->free_head = item->h_next;
+    }
 
     TBSYS_LOG(DEBUG, "from page id:%u,now free:%d,free-head:%lu,id will be use:%lu", info->id, info->free_nr,info->free_head,item_id);
 
@@ -516,7 +739,7 @@ namespace tair {
     {
       if (PAGE_ID((info->free_head)) != info->id)
       {
-        TBSYS_LOG(ERROR,"the page id of free_head [%d] != info->id [%d]",PAGE_ID(info->free_head),info->id);
+        TBSYS_LOG(ERROR,"the page id of free_head [%ld] != info->id [%u]",PAGE_ID(info->free_head),info->id);
       }
     }
     return item;
@@ -635,13 +858,53 @@ namespace tair {
     link_item(item, area);
   }
 
+  bool mem_cache::slab_manager::change_item_list_pointer(mdb_item *to_item, mdb_item *from_item)
+  {
+    if (!to_item || !from_item || to_item->item_id == 0 || from_item->item_id == 0) {
+      TBSYS_LOG(ERROR, "to_item or form_item is NULL. Why?");
+      return false;
+    }
+
+    if (ITEM_AREA(from_item) != ITEM_AREA(to_item)) {
+      TBSYS_LOG(ERROR, "to_item & form_item are not same area. Why?");
+      return false;
+    }
+
+    item_list *head = &this_item_list[ITEM_AREA(from_item)];
+    if (itemid_equal(head->item_head, from_item->item_id)) {
+      head->item_head = to_item->item_id;
+    }
+    if (itemid_equal(head->item_tail, from_item->item_id)) {
+      head->item_tail = to_item->item_id;
+    }
+
+    if (from_item->prev) {
+      mdb_item *item_prev = id_to_item(from_item->prev);
+      if (!itemid_equal(item_prev->next, from_item->item_id)) {
+        TBSYS_LOG(ERROR, "area item list error! return false!");
+        return false;
+      }
+      item_prev->next = to_item->item_id;
+    }
+    if (from_item->next) {
+      mdb_item *item_next = id_to_item(from_item->next);
+      if (!itemid_equal(item_next->prev, from_item->item_id)) {
+        TBSYS_LOG(ERROR, "area item list error! return false!");
+        return false;
+      }
+      item_next->prev = to_item->item_id;
+    }
+
+    return true;
+  }
+
   void mem_cache::slab_manager::free_item(mdb_item * item)
   {
     assert(item != 0 && item->item_id != 0);
     --item_total_count;
     unlink_item(item);
     page_info *info =
-      PAGE_INFO(this_mem_pool->index_to_page(PAGE_ID(item->item_id)));
+      PAGE_INFO(this_mem_pool->index_to_page(item->page_id));
     if(info->free_nr == 0) {
       unlink_page(info, full_pages);
       --full_pages_no;
@@ -654,9 +917,11 @@ namespace tair {
 
     item->prev = 0;
     item->next = 0;
+    item->prefix_size = 0;
+    item->low_hash = 0;
 
     TBSYS_LOG(DEBUG,
-              "id:%lu before free:page id:%d,%p,info->free_nr:%d,info->free_head:%lu,SLAB_ID(id):%d,",
+              "id:%lu before free:page id:%u,%p,info->free_nr:%d,info->free_head:%lu,SLAB_ID(id):%lu,",
               item->item_id,info->id,info, info->free_nr, info->free_head, SLAB_ID(item->item_id));
 
     item->h_next = info->free_head;
@@ -680,10 +945,114 @@ namespace tair {
       link_partial_page(info);
     }
 
-    TBSYS_LOG(DEBUG, "after free:page id:%d,%p,info->free_nr:%d,info->free_head:%lu,SLAB_ID(id):%d,info->free_head->next : %lu",
+    TBSYS_LOG(DEBUG, "after free:page id:%u,%p,info->free_nr:%d,info->free_head:%lu,SLAB_ID(id):%lu,info->free_head->next : %lu",
         info->id,info,info->free_nr,info->free_head,SLAB_ID(item->item_id),item->h_next);
   }
 
+  mdb_item *mem_cache::slab_manager::get_used_item_by_page_id(uint32_t page_id, uint32_t page_off_idx)
+  {
+    if (page_off_idx >= (uint32_t)per_slab) {
+      return NULL;
+    }
+
+    page_info *info = PAGE_INFO(this_mem_pool->index_to_page(page_id));
+
+    if (info == NULL || info->free_nr == 0 || info->free_head == 0 || info->free_nr == per_slab) {
+      TBSYS_LOG(ERROR, "Page ID Error, this slab manager have not partial page, check Slab Merge Algorithm!");
+      return NULL;
+    }
+
+    mdb_item *item_iter = NULL;
+    for (int i = page_off_idx; i < per_slab; ++i) {
+      // item addr = page_addr + sizeof(page_info) + slab_size * page_off
+      item_iter = reinterpret_cast<mdb_item *>((char *)info + sizeof(page_info) + slab_size * i);
+
+      // when a item in head or tail of `this_item_list`, It's prev or next maybe is 0
+      item_list *head = &this_item_list[ITEM_AREA(item_iter)];
+      if (item_iter->prev != 0 || item_iter->next != 0 ||
+          itemid_equal(head->item_head, item_iter->item_id) ||
+          itemid_equal(head->item_tail, item_iter->item_id)) {
+        return item_iter;
+      }
+    }
+
+    return NULL;
+  }
+
+  mdb_item *mem_cache::slab_manager::alloc_item_from_page(int page_id, bool &is_link_full)
+  {
+    page_info *info = NULL;
+    mdb_item *new_item = NULL;
+    uint64_t item_id = 0;
+  
+    info = PAGE_INFO(this_mem_pool->index_to_page(page_id));
+    TBSYS_LOG(INFO, "alloc new item in page(%d), item count %d -> %d", page_id, info->free_nr, info->free_nr - 1);
+
+    if (info == NULL || info->free_nr == 0 || info->free_head == 0) {
+      TBSYS_LOG(ERROR, "Page ID Error, this slab manager have not partial page, check Slab Merge Algorithm!");
+      return NULL;
+    }
+    if (info->free_nr == 0) {
+      TBSYS_LOG(ERROR, "Partial Page ID Error, rm shm files and check Slab Merge Algorithm!");
+      return NULL;
+    }
+
+    unlink_partial_page(info);
+
+    item_id = info->free_head;
+    new_item = id_to_item(item_id);
+    if (new_item == NULL || new_item->item_id != item_id) {
+      TBSYS_LOG(ERROR, "Item ID Error, rm shm files and check Slab Merge Algorithm!");
+      return NULL;
+    }
+
+    --(info->free_nr);
+
+    if (info->free_nr == 0) {
+      TBSYS_LOG(INFO, "page(%d) is full, we move it.", page_id);
+      is_link_full = true;
+      info->free_head = 0;
+      // this function update the `first_partial_page_index`
+      link_page(info, full_pages);
+      --partial_pages_no;
+      ++full_pages_no;
+    } else {
+      is_link_full = false;
+      info->free_head = new_item->h_next;
+      link_partial_page(info);
+    }
+    
+    return new_item;
+  }
+
+  int mem_cache::slab_manager::free_item_except_area_list(mdb_item *item)
+  {
+    page_info *info = PAGE_INFO(this_mem_pool->index_to_page(item->page_id));
+
+    unlink_partial_page(info);
+
+    item->prev = 0;
+    item->next = 0;
+    item->prefix_size = 0;
+    item->low_hash = 0;
+
+    item->h_next = info->free_head;
+    info->free_head = item->item_id;
+
+    TBSYS_LOG(INFO, "page(%u), free_item: %d -> %d", info->id, info->free_nr, info->free_nr + 1);
+    ++(info->free_nr);
+
+    if (info->free_nr == per_slab) {
+      TBSYS_LOG(INFO, "happy to free page(%d)", info->id);
+      --partial_pages_no;
+      this_mem_pool->free_page(info->id);
+      return 1;
+    } else {
+      link_partial_page(info);
+    }
+
+    return 0;
+  }
 
   mdb_item *mem_cache::slab_manager::evict_self(int &type)
   {
@@ -723,7 +1092,7 @@ namespace tair {
       }
       dump_item(item);
     }
-    CLEAR_FLAGS(item->item_id);
+    item->flags = 0;
     PROFILER_BEGIN("update item");
     update_item(item, ITEM_AREA(item));
     PROFILER_END();
@@ -771,7 +1140,7 @@ namespace tair {
         assert(false);                //shoudn't be here,just in case
       }
     }
-    CLEAR_FLAGS(item->item_id);
+    item->flags = 0;
     PROFILER_BEGIN("update item");
     update_item(item, area);
     PROFILER_END();
@@ -780,14 +1149,10 @@ namespace tair {
 
   void mem_cache::slab_manager::init_page(char *page, int index)
   {
-    PROFILER_BEGIN("memset");
-    memset(page, 0, page_size);
-    PROFILER_END();
-
     page_info *info = PAGE_INFO(page);
     info->id = index;
     info->free_nr = per_slab;
-    info->free_head = ITEM_ID(slab_size, 0, index, slab_id);
+    info->free_head = ITEM_ID(0, index, slab_id);
 
     TBSYS_LOG(DEBUG, "new page:%p,slab_size:%d,free_nr:%d,m_id:%d,free_head:%lu",page ,slab_size,
               per_slab, index,info->free_head);
@@ -795,9 +1160,12 @@ namespace tair {
     char *item_start = page + sizeof(page_info);
     mdb_item *item = reinterpret_cast<mdb_item *>(item_start);
     for(int i = 0; i < per_slab; ++i) {
+      memset(item, 0, sizeof(*item));
       item->next = item->prev = 0;
-      item->item_id = ITEM_ID(slab_size, i, index, slab_id);
-      item->h_next = ITEM_ID(slab_size, i + 1, index, slab_id);
+      item->page_off = i;
+      item->page_id = index;
+      item->slab_id = slab_id;
+      item->h_next = ITEM_ID(i + 1, index, slab_id);
       TBSYS_LOG(DEBUG,"in page [%d],the %dth item: %lu,h_next :%lu",info->id,i,item->item_id,item->h_next);
       item = reinterpret_cast<mdb_item *>((char*)item + slab_size);
     }
@@ -807,17 +1175,16 @@ namespace tair {
 
   void mem_cache::clear_page(slab_manager * slab_mng, char *page)
   {
-
-    //page_info *info = slabmng->PAGE_INFO(page);
+    page_info *info = reinterpret_cast<page_info*> (page);
+    log_warn("clearing page %u, %d items would be freed", info->id, slab_mng->per_slab - info->free_nr);
     char *item_start = page + sizeof(page_info);
     mdb_item *item = 0;
     for(int i = 0; i < slab_mng->per_slab; ++i) {
-      item =
-        reinterpret_cast<mdb_item *>(item_start + i * slab_mng->slab_size);
+      item = reinterpret_cast<mdb_item *>(item_start + i * slab_mng->slab_size);
       if(item->prev == 0 && item->next == 0) {
         continue;                //is free
       }
-      manager->__remove(item);
+      instance->__remove(item);
     }
   }
 
@@ -846,7 +1213,6 @@ namespace tair {
   {
     assert(item != 0);
     assert(item->item_id != 0);
-    assert(ITEM_AREA(item) < TAIR_MAX_AREA_COUNT);
 
     mdb_item *prev = 0;
     mdb_item *next = 0;

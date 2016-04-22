@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: mem_cache.hpp 2060 2014-01-06 05:59:01Z dutor $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>
@@ -14,6 +14,7 @@
  */
 #ifndef __MEM_CACHE_H
 #define __MEM_CACHE_H
+
 #include <iostream>
 #include <stdint.h>
 #include <stdlib.h>
@@ -21,26 +22,35 @@
 #include <vector>
 #include <map>
 #include <cassert>
-#include <boost/cast.hpp>
 #include "data_dumpper.hpp"
 #include "mem_pool.hpp"
 #include "tblog.h"
 #include "mdb_define.hpp"
+
 namespace tair {
 #pragma pack(1)
   struct mdb_item
   {
-    uint64_t h_next;
-    uint64_t prev;
-    uint64_t next;
-    uint32_t exptime;                /* expire time  */
-    uint32_t key_len:12;        /* size of key    */
-    uint32_t data_len:20;        /* size of data */
-    uint16_t version;                /*  */
-    uint32_t update_time;        /* the last update time */
-    uint64_t item_id;                /* 0~19 slab_size,20~35 offset in page,36~51 page_id */
-    /* 52~59 slab_id,60~63 flags(60 counter,61-63 free) */
-    char data[0];                /* key+data */
+    union {
+      uint64_t item_id;             //~ holding info to locate this item, and other meta info, as below
+      struct {
+        uint64_t prefix_size: 10;   //~ prefix size of key
+        uint64_t low_hash: 10;      //~ low bits of hash value
+        uint64_t page_off: 16;      //~ offset in page, by items
+        uint64_t page_id: 16;       //~ page id in mem_pool
+        uint64_t slab_id: 8;        //~ slab id
+        uint64_t flags: 4;          //~ counter: 0x1, hidden: 0x2, items(obsolete): 0x4, locked: 0x8
+      };
+    };
+    uint64_t h_next;                //~ next in hash bucket, or next in free list
+    uint64_t prev;                  //~ doubly-list used for LRU
+    uint64_t next;                  //~ doubly-list used for LRU
+    uint32_t exptime;               //~ time to be expired, in seconds, 0 for persistent
+    uint32_t key_len:12;            //~ size of key
+    uint32_t data_len:20;           //~ size of value
+    uint32_t update_time;           //~ last modified time
+    uint16_t version;               //~ CAS, an optimistic lock
+    char data[0];                   //~ start of user data, with `area' in the leading two bytes
   };
 #pragma pack()
 
@@ -52,71 +62,72 @@ namespace tair {
     ALLOC_EVICT_ANY,                /*  */
   };
 
-#define SLAB_SIZE_MASK ((1<<20)-1)
 #define OFFSET_MASK ((1<<16)-1)
 #define PAGE_ID_MASK ((1<<16)-1)
 #define SLAB_ID_MASK ((1<<8)-1)
-#define FLAGS_MASK 0x0FFFFFFFFFFFFFFF
-
+#define LOW_HASH_MASK ((1<<10)-1) 
 #define ITEM_KEY(it) (&((it)->data[0]))
 #define ITEM_DATA(it) (&((it)->data[0]) + (it)->key_len)
-#define ITEM_AREA(it) (((it)->data[0]&0xff)|(((it)->data[1]<<8)&0xff00))
-#define KEY_AREA(key) ((key[0]&0xff)|((key[1]<<8)&0xff00))
+#define ITEM_AREA(it) (*reinterpret_cast<const uint16_t*>((it)->data))
+#define KEY_AREA(key) (*reinterpret_cast<const uint16_t*>(key))
 
 
-#define SLAB_SIZE(x) ((x) & SLAB_SIZE_MASK)
 #define PAGE_OFFSET(x) (((x)>>20) & OFFSET_MASK)
 #define PAGE_ID(x) (((x)>>36) & PAGE_ID_MASK)
 #define SLAB_ID(x) (((x)>>52) & SLAB_ID_MASK)
-#define TEST_COUNTER(x) ((x) & (1ULL<<60))
-#define SET_COUNTER(x) ((x)|= (1ULL<<60))
-#define CLEAR_COUNTER(x) ((x) &= (~(1ULL<<60)))
-#define CLEAR_FLAGS(x) ((x) &= FLAGS_MASK)
-#define ITEM_FLAGS(x)                           \
-   ({                                           \
-      uint64_t __item_id = x;                   \
-      ((__item_id >> 60) & 0xf);                \
-   })
-#define SET_ITEM_FLAGS(x,v)                     \
-   ({                                           \
-      uint64_t value = ( (v) & 0xf);            \
-      (x) |= (value << 60);                     \
-   })
 
 #define ALIGN(x) ( ((x) + (mem_cache::ALIGN_SIZE-1)) & (~(mem_cache::ALIGN_SIZE-1)))
-#define ITEM_ID(_slab_size,_offset,_page_id,_slab_id)   \
+#define ITEM_ID(_offset,_page_id,_slab_id)   \
   ({                                                   \
    (((uint64_t)_slab_id) << 52                 \
     |((uint64_t)_page_id)<<36                  \
-    |((uint64_t)_offset) << 20                  \
-    |((uint64_t)_slab_size));})
+    |((uint64_t)_offset) << 20);})
 
-#define ITEM_ADDR(base,item_id,page_size)                               \
-   ({assert(item_id != 0);                                              \
-      reinterpret_cast<mdb_item *>(base                                 \
-                                   + PAGE_ID(item_id) * page_size       \
-                                   + SLAB_SIZE(item_id) * PAGE_OFFSET(item_id)+ sizeof(mem_cache::page_info));})
-#define id_to_item(id)                                                  \
-   ITEM_ADDR(this_mem_pool->get_pool_addr(),id,this_mem_pool->get_page_size())
+//~ when we use `item_id' as a locator, we do not care the trival bits
+#define CARED_FIELDS_MASK 0x0FFFFFFFFFF00000
+#define itemid_equal(lhs, rhs) ( ((lhs) & CARED_FIELDS_MASK) == ((rhs) & CARED_FIELDS_MASK) )
 
-#define itemid_equal(lhs, rhs) ( ((lhs) & FLAGS_MASK) == ((rhs) & FLAGS_MASK) )
-
-  class mdb_manager;
+  class mdb_instance;
 
   class mem_cache {
   public:
-    mem_cache(mem_pool * pool, mdb_manager * this_manager, int max_slab_id,
-              int base_size, float factor):this_mem_pool(pool),
-      manager(this_manager)
+    mem_cache(mem_pool * pool, mdb_instance * this_manager)
+      : this_mem_pool(pool), instance(this_manager)
     {
-      initialize(max_slab_id, base_size, factor);
     }
      ~mem_cache()
     {
     }
 
+    bool initialize(int max_slab_id, int base_size, float factor);
+
     //mdb_item* alloc_item(int size);
     mdb_item *alloc_item(int size, int &type);
+
+    bool is_item_fit(mdb_item *item, int size)
+    {
+      return find_target_slab(size) == (int)(SLAB_ID(item->item_id));
+    }
+
+    int find_target_slab(int size)
+    {
+      size_t slab_id = 0;
+      while (slab_id < slab_size.size() && slab_size[slab_id++] < size)
+        ;
+      if (slab_id == slab_size.size() && slab_size.back() < size) {
+        return (int)slab_id; //~ check effectiveness outside the door
+      }
+      return (int)--slab_id;
+    }
+
+    mdb_item* id_to_item(uint64_t id) {
+      return slab_managers[SLAB_ID(id)]->id_to_item(id);
+    }
+
+    int slab_size_of_item(uint64_t id) {
+      return slab_managers[SLAB_ID(id)]->slab_size;
+    }
+
     void update_item(mdb_item * mdb_item);
     void free_item(mdb_item * mdb_item);
     int free_page(int slabid);
@@ -132,6 +143,16 @@ namespace tair {
     inline void set_area_timestamp(int area, uint32_t current_time){
       *(area_timestamp + area) = current_time;
     }
+
+    //get the timestamp of the bucket
+    inline uint32_t get_bucket_timestamp(int bucket) const {
+      return *(bucket_timestamp + bucket);
+    }
+
+    //set the timestamp of the bucket
+    inline void set_bucket_timestamp(int bucket, uint32_t current_time){
+      *(bucket_timestamp + bucket) = current_time;
+    }
     void display_statics();
     static const int ALIGN_SIZE = 8;
     struct page_info
@@ -143,12 +164,17 @@ namespace tair {
       uint64_t free_head;
     };
 
+    inline page_info *PAGE_INFO(char *page)
+    {
+      return reinterpret_cast<page_info *>(page);
+    }
 
+    void slab_memory_merge(volatile bool &stopped, pthread_mutex_t *mdb_lock);
 
     bool is_quota_exceed(int area);
     void calc_slab_balance_info(std::map<int, int > &adjust_info);
     void balance_slab_done();
-    void keep_area_quota(int area, uint64_t exceed);
+    bool keep_area_quota(int area, uint64_t &exceed);
 
     struct mdb_cache_info
     {
@@ -166,10 +192,23 @@ namespace tair {
         cache(this_cache)
       {
       }
+      mdb_item* id_to_item(uint64_t id) {
+        char *addr = this->this_mem_pool->get_pool_addr();
+        addr += PAGE_ID(id) * mdb_param::page_size;
+        addr += sizeof(mem_cache::page_info);
+        addr += PAGE_OFFSET(id) * this->slab_size; 
+        return reinterpret_cast<mdb_item*>(addr);
+      }
       mdb_item *alloc_new_item(int area);
       mdb_item *alloc_item(int &type);
       void update_item(mdb_item * item, int area);
-      void free_item(mdb_item * mdb_item);
+
+      void free_item(mdb_item * item);
+ 
+      // for memory merge
+      mdb_item *get_used_item_by_page_id(uint32_t page_id, uint32_t page_off_idx);
+      mdb_item *alloc_item_from_page(int page_id, bool &is_link_full);
+      int free_item_except_area_list(mdb_item *item);
 
       mdb_item *evict_self(int &type);
       mdb_item *evict_any(int &type);
@@ -181,6 +220,8 @@ namespace tair {
       int pre_alloc(int pages = 1);
       void dump_item(mdb_item * mdb_item);
       void display_statics();
+
+      bool change_item_list_pointer(mdb_item *to_item, mdb_item *from_item);
 
       const static int PARTIAL_PAGE_BUCKET = 10;        /* every 10 items */
       int partial_pages_bucket_no()
@@ -195,6 +236,17 @@ namespace tair {
       {
         return partial_pages[first_partial_page_index];
       }
+
+      uint32_t get_the_most_free_items_of_partial_page_index()
+      {
+        for(int i = partial_pages_bucket_num - 1; i >= 0; --i) {
+          if(partial_pages[i] != 0) {
+            return i;
+          }
+        }
+        return 0;
+      } 
+
       uint32_t get_the_most_free_items_of_partial_page_id()
       {
         //the name is too long,but don't worry about this,
@@ -285,20 +337,25 @@ namespace tair {
   private:
     slab_manager * get_slabmng(int size);
     void clear_page(slab_manager * slabmng, char *page);
-    bool initialize(int max_slab_id, int base_size, float factor);
     bool get_slab_info();
     bool slab_initialize();
     mdb_item *evict_item(bool & evict);
     void init_page(char *page);
 
+    bool is_need_mem_merge(slab_manager *manager);
+    void copy_item(mdb_item *to_item, mdb_item *from_item);
+    bool do_slab_memory_merge(volatile bool &stopped, slab_manager *manager);
 
     mdb_cache_info *cache_info;
     std::vector<slab_manager *> slab_managers;
+    std::vector<int> slab_size;
     //the timestamp of the area
     uint32_t *area_timestamp;
+    //the timestamp of the buckets
+    uint32_t *bucket_timestamp;
 
     mem_pool *this_mem_pool;
-    mdb_manager *manager;
+    mdb_instance *instance;
     static data_dumpper item_dump;
   };
 

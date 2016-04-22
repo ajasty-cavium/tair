@@ -7,21 +7,25 @@
  *
  * tair_cfg_svr.cpp is the main func for config server
  *
- * Version: $Id$
+ * Version: $Id: tair_cfg_svr.cpp 2922 2014-09-05 08:25:26Z yunhen $
  *
  * Authors:
  *   Daoan <daoan@taobao.com>
  *
  */
 #include "tair_cfg_svr.hpp"
+#include "easy_helper.hpp"
+#include "response_return_packet.hpp"
 #include "util.hpp"
 
 namespace tair {
   namespace config_server {
-
-    tair_config_server::tair_config_server()
+    tair_config_server *tair_config_server::_this = NULL;
+    tair_config_server::tair_config_server() : my_server_conf_thread(&eio)
     {
       stop_flag = 0;
+      _this = this;
+      memset(&eio, 0, sizeof(eio));
     }
 
     tair_config_server::~tair_config_server()
@@ -30,59 +34,49 @@ namespace tair {
 
     void tair_config_server::start()
     {
-      if(initialize()) {
-        return;
+      if (initialize() != EXIT_SUCCESS) {
+        return ;
       }
 
-      //process thread
-      task_queue_thread.start();
-
-      // ransport
-      char spec[32];
       bool ret = true;
-      if(ret) {
+      if (ret) {
         int port =
           TBSYS_CONFIG.getInt(CONFSERVER_SECTION, TAIR_PORT,
                               TAIR_CONFIG_SERVER_DEFAULT_PORT);
         port++;                        // port of heart beat will be plus one
-        sprintf(spec, "tcp::%d", port);
-        if(heartbeat_transport.listen(spec, &packet_streamer, this) == NULL) {
+        easy_listen_t *listen = easy_io_add_listen(&eio, NULL, port, &handler);
+        if (listen == NULL) {
           log_error("listen port %d error", port);
           ret = false;
-        }
-        else {
+        } else {
           log_info("open tcp port %d", port);
         }
       }
       // tcp
-      if(ret) {
+      if (ret) {
         int port =
           TBSYS_CONFIG.getInt(CONFSERVER_SECTION, TAIR_PORT,
                               TAIR_CONFIG_SERVER_DEFAULT_PORT);
-        sprintf(spec, "tcp::%d", port);
-        if(packet_transport.listen(spec, &packet_streamer, this) == NULL) {
+        easy_listen_t *listen = easy_io_add_listen(&eio, NULL, port, &handler);
+        if (listen == NULL) {
           log_error("listen port %d error", port);
           ret = false;
-        }
-        else {
+        } else {
           log_info("listen tcp port: %d", port);
         }
       }
 
-      if(ret) {
+      if (ret) {
         log_info("---- program stated PID: %d ----", getpid());
-        packet_transport.start();
-        heartbeat_transport.start();
+        easy_io_start(&eio);
+        my_server_conf_thread.load_config_server();
         my_server_conf_thread.start();
-      }
-      else {
+      } else {
         stop();
       }
 
-      task_queue_thread.wait();
       my_server_conf_thread.wait();
-      packet_transport.wait();
-      heartbeat_transport.wait();
+      easy_io_wait(&eio);
 
       destroy();
     }
@@ -91,10 +85,10 @@ namespace tair {
     {
       if(stop_flag == 0) {
         stop_flag = 1;
+        log_warn("will stop eio");
+        easy_io_stop(&eio);
+        log_warn("will stop server_conf_thread");
         my_server_conf_thread.stop();
-        packet_transport.stop();
-        heartbeat_transport.stop();
-        task_queue_thread.stop();
       }
     }
 
@@ -103,6 +97,10 @@ namespace tair {
       const char *dev_name =
         TBSYS_CONFIG.getString(CONFSERVER_SECTION, TAIR_DEV_NAME, NULL);
       uint32_t local_ip = tbsys::CNetUtil::getLocalAddr(dev_name);
+      if (local_ip == 0U) {
+        log_error("local ip is 0.0.0.0, please check your dev_name");
+        return EXIT_FAILURE;
+      }
       int port =
         TBSYS_CONFIG.getInt(CONFSERVER_SECTION, TAIR_PORT,
                             TAIR_CONFIG_SERVER_DEFAULT_PORT);
@@ -136,193 +134,226 @@ namespace tair {
                  c_str());
       }
 
-      // packet_streamer
-      packet_streamer.setPacketFactory(&packet_factory);
-      //m_sdbmStreamer.setPacketFactory(&m_sdbmFactory);
+      int task_thread_count = TBSYS_CONFIG.getInt(CONFSERVER_SECTION, TAIR_PROCESS_THREAD_COUNT, 8);
+      int io_thread_count = TBSYS_CONFIG.getInt(CONFSERVER_SECTION, TAIR_IO_PROCESS_THREAD_COUNT, 2);
 
-      int thread_count =
-        TBSYS_CONFIG.getInt(CONFSERVER_SECTION, TAIR_PROCESS_THREAD_COUNT, 4);
-      task_queue_thread.setThreadParameter(thread_count, this, NULL);
+      //~ create eio
+      if (!easy_io_create(&eio, io_thread_count)) {
+        log_error("create eio failed");
+        return EXIT_FAILURE;
+      }
+      eio.do_signal = 0;
+      eio.no_redispatch = 0;
+      eio.listen_all = 1;
+      eio.no_reuseport = 1;
+      eio.tcp_nodelay = 1;
+      eio.tcp_cork = 0;
+      eio.affinity_enable = 1;
 
-      // my_server_conf_thread
-      my_server_conf_thread.set_thread_parameter(&packet_transport,
-                                                 &heartbeat_transport,
-                                                 &packet_streamer);
+      //~ initialize eio handler
+      easy_helper::init_handler(&handler, this);
+      handler.process = easy_io_packet_handler_cb;
+
+      //~ create thread pool
+      task_queue = easy_request_thread_create(&eio, task_thread_count, packet_handler_cb, NULL);
 
       return EXIT_SUCCESS;
     }
 
     int tair_config_server::destroy()
     {
+      easy_io_destroy(&eio);
       return EXIT_SUCCESS;
     }
 
-    tbnet::IPacketHandler::HPRetCode tair_config_server::handlePacket(tbnet::
-                                                                      Connection
-                                                                      *
-                                                                      connection,
-                                                                      tbnet::
-                                                                      Packet *
-                                                                      packet)
-    {
-      if(!packet->isRegularPacket()) {
-        log_error("ControlPacket, cmd:%d",
-                  ((tbnet::ControlPacket *) packet)->getCommand());
-        return tbnet::IPacketHandler::FREE_CHANNEL;
+    int tair_config_server::easy_io_packet_handler(easy_request_t *r) {
+      base_packet *packet = (base_packet*)r->ipacket;
+      if(packet == NULL || !packet->isRegularPacket()) {
+        log_error("ControlPacket, timeout");
+        return EASY_OK;
       }
 
-      base_packet *bp = (base_packet *) packet;
-      bp->set_connection(connection);
-      bp->set_direction(DIRECTION_RECEIVE);
-      task_queue_thread.push(bp);
-
-      return tbnet::IPacketHandler::KEEP_CHANNEL;
+      packet->set_direction(DIRECTION_RECEIVE);
+      easy_thread_pool_push(task_queue, r, r->ms->c->ioth->idx);
+      return EASY_AGAIN;
     }
 
-    bool tair_config_server::handlePacketQueue(tbnet::Packet * apacket,
-                                               void *args)
-    {
-      base_packet *packet = (base_packet *) apacket;
-      int pcode = apacket->getPCode();
-
+    int tair_config_server::packet_handler(easy_request_t *r) {
+      base_packet *packet = (base_packet*)r->ipacket;
+      int pcode = packet->getPCode();
 
       bool send_ret = true;
       int ret = EXIT_SUCCESS;
       const char *msg = "";
       switch (pcode) {
-      case TAIR_REQ_GET_GROUP_PACKET:{
-          request_get_group *req = (request_get_group *) packet;
-          response_get_group *resp = new response_get_group();
+      case TAIR_REQ_GET_GROUP_PACKET:
+      {
+        request_get_group *req = (request_get_group *) packet;
+        response_get_group *resp = new response_get_group();
 
-          my_server_conf_thread.find_group_host(req, resp);
+        my_server_conf_thread.find_group_host(req, resp);
 
-          resp->setChannelId(packet->getChannelId());
-          if(packet->get_connection()->postPacket(resp) == false) {
-            delete resp;
-          }
-          send_ret = false;
-        }
+        resp->setChannelId(packet->getChannelId());
+        r->opacket = resp;
+        send_ret = false;
         break;
-      case TAIR_REQ_HEARTBEAT_PACKET:{
-          request_heartbeat *req = (request_heartbeat *) packet;
-          response_heartbeat *resp = new response_heartbeat();
+      }
+      case TAIR_REQ_HEARTBEAT_PACKET:
+      {
+        request_heartbeat *req = (request_heartbeat *) packet;
+        response_heartbeat *resp = new response_heartbeat();
 
-          my_server_conf_thread.do_heartbeat_packet(req, resp);
-          resp->setChannelId(packet->getChannelId());
-          if(packet->get_connection()->postPacket(resp) == false) {
-            log_error("send req heartbeat packet error");
-            delete resp;
-          }
-          send_ret = false;
-        }
+        my_server_conf_thread.do_heartbeat_packet(req, resp);
+        resp->setChannelId(packet->getChannelId());
+        r->opacket = resp;
+        send_ret = false;
         break;
-      case TAIR_REQ_QUERY_INFO_PACKET:{
-          request_query_info *req = (request_query_info *) packet;
-          response_query_info *resp = new response_query_info();
+      }
+      case TAIR_REQ_QUERY_INFO_PACKET:
+      {
+        request_query_info *req = (request_query_info *) packet;
+        response_query_info *resp = new response_query_info();
 
-          my_server_conf_thread.do_query_info_packet(req, resp);
-          resp->setChannelId(packet->getChannelId());
-          if(packet->get_connection()->postPacket(resp) == false) {
-            log_error("send req query info packet error");
-            delete resp;
-          }
-          send_ret = false;
-        }
+        my_server_conf_thread.do_query_info_packet(req, resp);
+        resp->setChannelId(packet->getChannelId());
+        r->opacket = resp;
+        send_ret = false;
         break;
-      case TAIR_REQ_CONFHB_PACKET:{
-          my_server_conf_thread.
-            do_conf_heartbeat_packet((request_conf_heartbeart *) packet);
-        }
-        break;
-      case TAIR_REQ_SETMASTER_PACKET:{
-          if(my_server_conf_thread.
-             do_set_master_packet((request_set_master *) packet) == false) {
-            ret = EXIT_FAILURE;
-          }
-        }
-        break;
-      case TAIR_REQ_GET_SVRTAB_PACKET:{
-          request_get_server_table *req = (request_get_server_table *) packet;
-          response_get_server_table *resp = new response_get_server_table();
-
-          my_server_conf_thread.do_get_server_table_packet(req, resp);
-          resp->setChannelId(packet->getChannelId());
-          if(packet->get_connection()->postPacket(resp) == false) {
-            delete resp;
-          }
-          send_ret = false;
-        }
-        break;
-      case TAIR_RESP_GET_SVRTAB_PACKET:{
-          if(my_server_conf_thread.
-             do_set_server_table_packet((response_get_server_table *) packet)
-             == false) {
-            ret = EXIT_FAILURE;
-          }
-        }
-        break;
-      case TAIR_REQ_MIG_FINISH_PACKET:{
-          ret =
-            my_server_conf_thread.
-            do_finish_migrate_packet((request_migrate_finish *) packet);
-          if(ret == 1) {
-            send_ret = false;
-          }
-          if(ret == -1) {
-            ret = EXIT_FAILURE;
-          }
-          else {
-            ret = EXIT_SUCCESS;
-          }
-        }
-        break;
-
-      case TAIR_REQ_GROUP_NAMES_PACKET:{
-          response_group_names *resp = new response_group_names();
-          my_server_conf_thread.do_group_names_packet(resp);
-          resp->setChannelId(packet->getChannelId());
-          if(packet->get_connection()->postPacket(resp) == false) {
-            delete resp;
-          }
-          send_ret = false;
-        }
-        break;
-      case TAIR_REQ_DATASERVER_CTRL_PACKET:
-        // force down or foece up some dataserver;
+      }
+      case TAIR_REQ_CONFHB_PACKET:
+      {
         my_server_conf_thread.
-          force_change_server_status((request_data_server_ctrl *) packet);
+          do_conf_heartbeat_packet((request_conf_heartbeart *) packet);
         break;
+      }
+      case TAIR_REQ_SETMASTER_PACKET:
+      {
+        if(my_server_conf_thread.
+            do_set_master_packet((request_set_master *) packet,
+                                easy_helper::convert_addr(r->ms->c->addr)) == false) {
+          ret = EXIT_FAILURE;
+        }
+        break;
+      }
+      case TAIR_REQ_GET_SVRTAB_PACKET:
+      {
+        request_get_server_table *req = (request_get_server_table *) packet;
+        response_get_server_table *resp = new response_get_server_table();
+
+        my_server_conf_thread.do_get_server_table_packet(req, resp);
+        resp->setChannelId(packet->getChannelId());
+        r->opacket = resp;
+        send_ret = false;
+        break;
+      }
+      case TAIR_RESP_GET_SVRTAB_PACKET:
+      {
+        if(my_server_conf_thread.
+            do_set_server_table_packet((response_get_server_table *) packet) == false) {
+          ret = EXIT_FAILURE;
+        }
+        break;
+      }
+      case TAIR_REQ_GET_GROUP_NON_DOWN_DATASERVER_PACKET:
+      {
+        request_get_group_not_down_dataserver* req = (request_get_group_not_down_dataserver*)packet;
+        response_get_group_non_down_dataserver*resp = new response_get_group_non_down_dataserver();
+
+        my_server_conf_thread.do_get_group_non_down_dataserver_packet(req, resp);
+        resp->setChannelId(packet->getChannelId());
+        r->opacket = resp;
+        send_ret = false;
+        break;
+      }
+      case TAIR_REQ_MIG_FINISH_PACKET:{
+        ret =
+          my_server_conf_thread.
+          do_finish_migrate_packet((request_migrate_finish *) packet);
+        if(ret == 1) {
+          send_ret = false;
+        }
+        if(ret == -1) {
+          ret = EXIT_FAILURE;
+        }
+        else {
+          ret = EXIT_SUCCESS;
+        }
+        break;
+      }
+      // add for recovery
+      case TAIR_REQ_REC_FINISH_PACKET:{
+        ret =
+          my_server_conf_thread.
+          do_finish_recovery_packet((request_recovery_finish *) packet);
+        if(ret == 1) {
+          send_ret = false;
+        }
+        if(ret == -1) {
+          ret = EXIT_FAILURE;
+        }
+        else {
+          ret = EXIT_SUCCESS;
+        }
+        break;
+      }
+      case TAIR_REQ_GROUP_NAMES_PACKET:
+      {
+        response_group_names *resp = new response_group_names();
+        my_server_conf_thread.do_group_names_packet(resp);
+        resp->setChannelId(packet->getChannelId());
+        r->opacket = resp;
+        send_ret = false;
+        break;
+      }
+      case TAIR_REQ_DATASERVER_CTRL_PACKET:
+      {
+        // force add or delete some dataserver;
+        request_data_server_ctrl* req = (request_data_server_ctrl*)packet;
+        response_data_server_ctrl* resp = new response_data_server_ctrl();
+        my_server_conf_thread.change_server_list_to_group_file(req, resp);
+        resp->setChannelId(packet->getChannelId());
+        r->opacket = resp;
+        send_ret = false;
+      }
+      break;
       case TAIR_REQ_GET_MIGRATE_MACHINE_PACKET:
-        {
-          response_get_migrate_machine *resp =
-            new response_get_migrate_machine();
-          request_get_migrate_machine *req =
-            (request_get_migrate_machine *) packet;
+      {
+        response_get_migrate_machine *resp =
+          new response_get_migrate_machine();
+        request_get_migrate_machine *req =
+          (request_get_migrate_machine *) packet;
 
-          my_server_conf_thread.get_migrating_machines(req, resp);
+        my_server_conf_thread.get_migrating_machines(req, resp);
 
-          resp->setChannelId(packet->getChannelId());
-          if(packet->get_connection()->postPacket(resp) == false) {
-            delete resp;
-          }
-          send_ret = false;
-        }
+        resp->setChannelId(packet->getChannelId());
+        r->opacket = resp;
+        send_ret = false;
         break;
+      }
       case TAIR_REQ_OP_CMD_PACKET:
-        {
-          request_op_cmd *req = (request_op_cmd*) packet;
-          my_server_conf_thread.do_op_cmd(req);
-          send_ret = false;
-          break;
-        }
+      {
+        response_op_cmd *resp = new response_op_cmd();
+        request_op_cmd *req = (request_op_cmd*) packet;
+        my_server_conf_thread.do_op_cmd(req, resp);
+        r->opacket = resp;
+        send_ret = false;
+        break;
+      }
+      case TAIR_REQ_PING_PACKET:
+      {
+        response_return *resp = new response_return(packet->getChannelId(), ret, msg, 0);
+        r->opacket = resp;
+        send_ret = false;
+        break;
+      }
       default:
         log_error("unknow packet pcode: %d", pcode);
       }
-      if(send_ret && packet->get_direction() == DIRECTION_RECEIVE) {
-        uint32_t temp = 0;
-        tair_packet_factory::set_return_packet(packet, ret, msg, 0, temp);
+      if (send_ret && packet->get_direction() == DIRECTION_RECEIVE) {
+        response_return *resp = new response_return(packet->getChannelId(), ret, msg, 0);
+        r->opacket = resp;
       }
-      return true;
+      return EASY_OK;
     }
   }
 }                                // namespace end
@@ -339,6 +370,7 @@ sign_handler(int sig)
   case SIGTERM:
   case SIGINT:
     if(tair_cfg_svr != NULL) {
+      log_warn("will stop tair_cfg_svr");
       tair_cfg_svr->stop();
     }
     break;
@@ -347,11 +379,10 @@ sign_handler(int sig)
     break;
   case 41:
   case 42:
-    if(sig == 41) {
-      TBSYS_LOGGER._level++;
-    }
-    else {
-      TBSYS_LOGGER._level--;
+    if (sig==41) {
+      tair::easy_helper::easy_set_log_level(++TBSYS_LOGGER._level);
+    } else {
+      tair::easy_helper::easy_set_log_level(--TBSYS_LOGGER._level);
     }
     log_error("TBSYS_LOGGER._level: %d", TBSYS_LOGGER._level);
     break;
@@ -370,20 +401,16 @@ print_usage(char *prog_name)
 char *
 parse_cmd_line(int argc, char *const argv[])
 {
-  int
-    opt;
-  const char *
-    opt_string = "hVf:";
-  struct option
-    longopts[] = {
+  int opt;
+  const char * opt_string = "hVf:";
+  struct option longopts[] = {
     {"config_file", 1, NULL, 'f'},
     {"help", 0, NULL, 'h'},
     {"version", 0, NULL, 'V'},
     {0, 0, 0, 0}
   };
 
-  char *
-    config_file = NULL;
+  char * config_file = NULL;
   while((opt = getopt_long(argc, argv, opt_string, longopts, NULL)) != -1) {
     switch (opt) {
     case 'f':
@@ -427,8 +454,8 @@ main(int argc, char *argv[])
       p,
       dir_path[256];
     sprintf(dir_path, "%s",
-            TBSYS_CONFIG.getString(CONFSERVER_SECTION, TAIR_DATA_DIR,
-                                   TAIR_DEFAULT_DATA_DIR));
+        TBSYS_CONFIG.getString(CONFSERVER_SECTION, TAIR_DATA_DIR,
+          TAIR_DEFAULT_DATA_DIR));
     if(!tbsys::CFileUtil::mkdirs(dir_path)) {
       fprintf(stderr, "create dir %s error\n", dir_path);
       return EXIT_FAILURE;

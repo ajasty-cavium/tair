@@ -1,1 +1,1 @@
-SUBDIRS=common plugin packets client storage configserver statserver dataserver invalserver tools
+SUBDIRS=rpc common plugin packets client storage configserver statserver dataserver adminserver tools

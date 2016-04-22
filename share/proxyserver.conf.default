@@ -1,0 +1,30 @@
+[public]
+io_thread_num = 2
+port = 11212
+log_level = debug
+log_file = logs/proxy.log
+pid_file = logs/proxy.pid
+
+not_need_password=0
+
+monitor_master = 10.232.4.16:50040
+
+sasl_master = 10.232.4.16:51980 
+sasl_slave = 10.232.4.16:51980
+sasl_group = group_1
+sasl_area = 0
+
+# io thread count of sasl tair client
+sasl_client_ioth_count = 1
+
+# tair clusters, backends of this proxy server
+
+[tair_001]
+master = 10.232.4.16:51980
+slave = 10.232.4.16:51980
+group = group_1
+# io thread count of client
+client_ioth_count = 4
+# timeout of client, ms
+timeout = 1000
+

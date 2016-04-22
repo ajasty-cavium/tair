@@ -5,6 +5,8 @@
  *      Author: huzhenxiong.pt
  */
 
+#include <sys/mman.h>
+
 #include "stat_manager.hpp"
 
 namespace tair {
@@ -21,10 +23,10 @@ namespace tair {
         stop();
       }
 
-      bool stat_manager::start(int bucket_number, const char *file_dir)
+      bool stat_manager::start(const char *file_dir)
       {
         // open file
-        snprintf(file_name, TAIR_MAX_PATH_LEN, "%s/tair_db_%06d.stat", file_dir, bucket_number);
+        snprintf(file_name, TAIR_MAX_PATH_LEN, "%s/tair_db.stat", file_dir);
         fd =::open(file_name, O_RDWR | O_CREAT | O_LARGEFILE, 0600);
         if(fd < 0) {
           log_error("open file [%s] failed: %s", file_name, strerror(errno));
@@ -59,7 +61,7 @@ namespace tair {
           msync(stat_info, DBSTATINFO_SIZE, MS_SYNC);
           munmap(stat_info, DBSTATINFO_SIZE);
           stat_info = NULL;
-          log_debug("mmap unmapped, size is: [%d]", DBSTATINFO_SIZE);
+          log_debug("mmap unmapped, size is: [%lu]", DBSTATINFO_SIZE);
         }
         if(fd < 0) {
           log_info("file [%s] not opened, need not close", file_name);

@@ -15,6 +15,8 @@
 #ifndef TAIR_LIBMDB_C_H
 #define TAIR_LIBMDB_C_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,8 +24,11 @@ extern "C" {
   typedef void* mdb_t;
 
   typedef struct {
-    const char  *mdb_type; //~ "mdb_shm" for shared memory, "mdb" for heap memory
-    const char  *mdb_path; //~ POSIX name of shared memory, like "/mdb_shm_path"
+    bool        use_check_thread;
+    bool        lock_pshared;
+    int         inst_shift;
+    const char *mdb_type; //~ "mdb_shm" for shared memory, "mdb" for heap memory
+    const char *mdb_path; //~ POSIX name of shared memory, like "/mdb_shm_path"
     int64_t     size; //~ size of shm
     int         slab_base_size; //~ the minimal slab size used by mdb
     int         page_size;
@@ -35,6 +40,8 @@ extern "C" {
 
     int         chkslab_time_low; //~ lower bound of the slab-checking time range
     int         chkslab_time_high; //~ upper bound of the slab-checking time range
+    int         check_granularity;        // default 15
+    int         check_granularity_factor; // default 10
   } mdb_param_t;
 
   //~ kinds of accumulated stat items

@@ -7,7 +7,7 @@
  *
  * heartbeat packet between dataserver and configserver
  *
- * Version: $Id$
+ * Version: $Id: heartbeat_packet.hpp 2922 2014-09-05 08:25:26Z yunhen $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -23,6 +23,51 @@
 using namespace std;
 namespace tair {
 
+// heartbeat will carry transition status information,
+// we capsuled them to this(one int type) just for heartbeat packet compatibility.
+// format:
+//   +--------------+-----------+---------+---------+---------------------+
+//   |0             |1          |2        |3        |8                  31|
+//   +--------------+-----------+---------+---------+---------------------+
+//   |data_need_move|failovering|migrating| reserved| transition version  |
+//   +--------------+-----------+---------+---------+---------------------+
+   struct cluster_transition_info {
+     static const uint32_t MAX_TRANSITION_VERSION = 1U << 23;
+     uint32_t transition_version;
+     bool failovering;
+     bool migrating;
+     bool data_need_move;
+
+     cluster_transition_info()
+     {
+       transition_version = 0;
+       failovering = migrating = data_need_move = false;
+     }
+     cluster_transition_info(uint32_t info)
+     { set(info); }
+
+     uint32_t get()
+     {
+       return (transition_version << 8) |
+         (data_need_move ? 1 : 0) |
+         ((failovering ? 1 : 0) << 1) |
+         ((migrating ? 1 : 0) << 2);
+     }
+     void set(uint32_t info)
+     {
+       transition_version = info >> 8;
+       data_need_move = (info & 0x1) != 0;
+       failovering = (info & 0x2) != 0;
+       migrating = (info & 0x4) != 0;
+     }
+     void reset(uint32_t transition_version, bool data_need_move = false, bool failovering = false, bool migrating = false)
+     {
+       this->transition_version = transition_version;
+       this->data_need_move = data_need_move;
+       this->failovering = failovering;
+       this->migrating = migrating;
+     }
+   };
 
    class request_heartbeat : public base_packet {
    public:
@@ -30,11 +75,10 @@ namespace tair {
       {
          setPCode(TAIR_REQ_HEARTBEAT_PACKET);
          server_id = 0U;
-         loop_count = 0U;
+         transition_info = 0U;
          config_version = 0U;
-         status = 0U;
+         recovery_version = 0;
          server_flag = 0;
-         //memset(&_stat, 0, sizeof(tair_stat));
          plugins_version = 0U;
          area_capacity_version = 0U;
          pull_migrated_info =0U;
@@ -44,14 +88,14 @@ namespace tair {
       }
 
       request_heartbeat(request_heartbeat &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_HEARTBEAT_PACKET);
          server_id = packet.server_id;
-         loop_count = packet.loop_count;
+         transition_info = packet.transition_info;
          config_version = packet.config_version;
-         status = packet.status;
+         recovery_version = packet.recovery_version;
          server_flag = packet.server_flag;
-         //memcpy(&_stat, &(packet._stat), sizeof(tair_stat));
          plugins_version = packet.plugins_version;
          area_capacity_version = packet.area_capacity_version;
          vec_area_capacity_info = packet.vec_area_capacity_info;
@@ -79,14 +123,17 @@ namespace tair {
          }
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+         return base_packet::REQ_SPECIAL;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt8(server_flag);
          output->writeInt64(server_id);
-         output->writeInt32(loop_count);
+         output->writeInt32(transition_info.get());
          output->writeInt32(config_version);
-         output->writeInt32(status);
-         //output->writeBytes(&_stat, sizeof(tair_stat));
+         output->writeInt32(recovery_version);
          output->writeInt8(pull_migrated_info);
          output->writeInt32(vec_bucket_no.size());
          for (size_t i = 0; i < vec_bucket_no.size(); i++) {
@@ -107,7 +154,7 @@ namespace tair {
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 12) {
             log_warn( "buffer data too few.");
@@ -115,9 +162,9 @@ namespace tair {
          }
          server_flag = input->readInt8();
          server_id = input->readInt64();
-         loop_count = input->readInt32();
+         transition_info.set(input->readInt32());
          config_version = input->readInt32();
-         status = input->readInt32();
+         recovery_version = input->readInt32();
          pull_migrated_info = input->readInt8();
          size_t size = input->readInt32();
          if (size > 0) {
@@ -181,19 +228,58 @@ namespace tair {
          if (ret != Z_OK) {
             ::free(stats);
             stats = NULL;
-            log_error( "uncompress stat info failed, ret: %d");
+            log_error( "uncompress stat info failed, ret: %d", ret);
          } else {
             log_debug("uncompress successed");
          }
          return stats;
       }
 
-   public:
+     void set_is_server_ready(bool is_server_ready)
+     {
+       if (LIKELY(is_server_ready))
+         server_id &= ~((uint64_t)1 << 63); // set bit not_ready_flag to 0
+       else
+         server_id |= ((uint64_t)1 << 63);  // set bit not_ready_flag to 1
+     }
+
+     bool check_is_server_ready() const
+     {
+       uint64_t not_ready_flag = server_id & ((uint64_t)1 << 63);
+       if (not_ready_flag != 0)
+         return false;
+       return true;
+     }
+
+     void set_server_id(uint64_t a_server_id)
+     {
+       server_id = (server_id & server_id_flag_header_mask) | (a_server_id & (~server_id_flag_header_mask));
+     }
+
+     uint64_t get_server_id() const
+     {
+       return server_id & (~server_id_flag_header_mask);
+     }
+
+   private:
+     /*
+       for compatible, really ugly, header 16bit for flag
+     server_id, uint64_t
+    |----------+----------+------------+-----------------|
+    | ip       | port     | not used   | not_ready_flag  |
+    |----------+----------+------------+-----------------|
+    | 0     31 | 32    47 | 48      62 |              63 |
+    |----------+----------+------------+-----------------|
+    if is_ready_flag == false, set bit not_ready_flag to 1
+    else set bit not_ready_flag to 0
+     */
       uint64_t server_id;
-      uint32_t loop_count;
+      static const uint64_t server_id_flag_header_mask = 0xffff000000000000;
+
+   public:
+      cluster_transition_info transition_info;
       uint32_t config_version;
-      uint32_t status; // server status, {0: alive, 1: down, 2: initing, 3: synced}
-      //tair_stat _stat;
+      uint32_t recovery_version; // recovery version used in recover process
       uint32_t  plugins_version;
       uint32_t  area_capacity_version;
       vector<pair<uint32_t, uint64_t> > vec_area_capacity_info;
@@ -209,32 +295,37 @@ namespace tair {
    class response_heartbeat : public base_packet, public server_hash_table_packet {
    public:
 
-      response_heartbeat() 
+      response_heartbeat()
       {
          setPCode(TAIR_RESP_HEARTBEAT_PACKET);
          client_version = 0U;
          server_version = 0U;
          down_slave_config_server = 0U;
-         data_need_move = -1;
+         transition_info = 0U;
          plugins_flag = -1;
          plugins_version = 0U;
          area_capacity_version = 0U;
          copy_count = 0U;
          bucket_count = 0U;
+         recovery_version = 0U;
       }
 
       ~response_heartbeat()
       {
       }
 
-      bool encode(tbnet::DataBuffer *output)
+      virtual base_packet::Type get_type() {
+         return base_packet::RESP_COMMON;
+      }
+
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(client_version);
          output->writeInt32(server_version);
          output->writeInt32(bucket_count);
          output->writeInt32(copy_count);
          output->writeInt64(down_slave_config_server);
-         output->writeInt32(data_need_move);
+         output->writeInt32(transition_info.get());
          output->writeInt32(hash_table_size);
          if (hash_table_data != NULL && hash_table_size > 0) {
             output->writeBytes(hash_table_data, hash_table_size);
@@ -266,10 +357,21 @@ namespace tair {
             }
          }
 
+         // if failovering encode the recovery list and recovery_version
+         if (transition_info.failovering) {
+           output->writeInt32(recovery_ds.size());
+           if (recovery_ds.size() > 0) {
+              for (size_t i = 0; i < recovery_ds.size(); ++i) {
+                 output->writeInt64(recovery_ds[i]);
+              }
+           }
+           output->writeInt32(recovery_version);
+         }
+
          return true;
       }
 
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < 20) {
             log_warn( "buffer data too few.");
@@ -280,7 +382,7 @@ namespace tair {
          bucket_count = input->readInt32();
          copy_count = input->readInt32();
          down_slave_config_server = input->readInt64();
-         data_need_move = input->readInt32();
+         transition_info.set(input->readInt32());
          set_hash_table(NULL, input->readInt32());
          if (hash_table_size > input->getDataLen()) {
             log_warn( "buffer data too few.");
@@ -317,6 +419,15 @@ namespace tair {
          for (int i = 0 ; i < size; ++i) {
             migrated_info.push_back(input->readInt64());
          }
+
+         if (transition_info.failovering) {
+           int size = input->readInt32();
+           for (int i = 0 ; i < size; ++i) {
+              recovery_ds.push_back(input->readInt64());
+           }
+           recovery_version = input->readInt32();
+         }
+
          return true;
       }
       bool have_plugins_info()
@@ -349,7 +460,7 @@ namespace tair {
       uint32_t bucket_count;
       uint32_t copy_count;
       uint64_t down_slave_config_server;
-      int32_t  data_need_move;
+      cluster_transition_info transition_info;
       char group_name[64];
       int32_t plugins_flag;
       uint32_t plugins_version;
@@ -360,6 +471,10 @@ namespace tair {
       // migrated_info will contains bucket number and all serverId which is a copy of this. if bucket's count greater than 1, repeate this
       // for exmaple when copy count is 3 , this may be  bucketId1, serverid11,serverid12,serverid13, bucketId2,serverid21,serverid22,serverid23
       vector<uint64_t> migrated_info;
+
+      // recovery_ds contains the ds that is being recovered
+      vector<uint64_t> recovery_ds;
+      uint32_t recovery_version;
 
    private:
       response_heartbeat(const response_heartbeat&);

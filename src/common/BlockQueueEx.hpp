@@ -131,7 +131,7 @@ T BlockQueueEx<T>::get()
 template <class T>
 T BlockQueueEx<T>::get(int tmms)
 {
-	T retT;
+	T retT = NULL;
 #ifdef _WIN32
 	
 	DWORD	dwWaitResult = WaitForSingleObject( 

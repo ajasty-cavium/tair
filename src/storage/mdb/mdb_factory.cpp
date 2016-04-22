@@ -6,7 +6,7 @@
  * published by the Free Software Foundation.
  *
  *
- * Version: $Id$
+ * Version: $Id: mdb_factory.cpp 1686 2013-07-12 05:33:40Z dutor $
  *
  * Authors:
  *   MaoQi <maoqi@taobao.com>
@@ -39,8 +39,13 @@ namespace tair {
     mdb_param::mdb_path = path != NULL ? path :
       TBSYS_CONFIG.getString(TAIRSERVER_SECTION, TAIR_MDB_SHM_PATH,
                              "/mdb_shm_path");
+    mdb_param::inst_shift =
+      TBSYS_CONFIG.getInt(TAIRSERVER_SECTION, TAIR_MDB_INST_SHIFT, 3);
+
     mdb_param::size =
       TBSYS_CONFIG.getInt(TAIRSERVER_SECTION, TAIR_SLAB_MEM_SIZE, 2048);
+    mdb_param::size >>= mdb_param::inst_shift;
+
     mdb_param::slab_base_size = TBSYS_CONFIG.getInt(TAIRSERVER_SECTION,TAIR_SLAB_BASE_SIZE,64);
 
     mdb_param::page_size =
@@ -49,7 +54,8 @@ namespace tair {
       (TBSYS_CONFIG.getInt(TAIRSERVER_SECTION, TAIR_SLAB_FACTOR, 110) * 1.0) / 100;
 
     mdb_param::hash_shift =
-      TBSYS_CONFIG.getInt(TAIRSERVER_SECTION, TAIR_MDB_HASH_BUCKET_SHIFT, 23);
+      TBSYS_CONFIG.getInt(TAIRSERVER_SECTION, TAIR_MDB_HASH_BUCKET_SHIFT, 24);
+    mdb_param::hash_shift -= mdb_param::inst_shift;
 
     const char *hour_range =
       TBSYS_CONFIG.getString(TAIRSERVER_SECTION,
@@ -73,9 +79,15 @@ namespace tair {
       mdb_param::chkslab_time_high = 7;
     }
 
+    mdb_param::enable_put_remove_expired = (bool)TBSYS_CONFIG.getInt(TAIRSERVER_SECTION,
+                                         TAIR_MDB_PUT_REMOVE_EXPIRE, 0);
+
     std::vector<const char *> str_area_capacity_list =
       TBSYS_CONFIG.getStringList(TAIRSERVER_SECTION, TAIR_MDB_DEFAULT_CAPACITY);
     parse_area_capacity_list(str_area_capacity_list);
+
+    mdb_param::check_granularity = TBSYS_CONFIG.getInt(TAIRSERVER_SECTION, "mdb_check_granularity", 15); 
+    mdb_param::check_granularity_factor = TBSYS_CONFIG.getInt(TAIRSERVER_SECTION, "mdb_check_granularity_factor", 10); 
 
     mdb_param::size *= (1 << 20);        //in MB
 
@@ -92,6 +104,20 @@ namespace tair {
     TBSYS_LOG(DEBUG, "size:%lu,page_size:%d,m_factor:%f,m_hash_shift:%d",
               mdb_param::size, mdb_param::page_size, mdb_param::factor,
               mdb_param::hash_shift);
+
+    hour_range =
+      TBSYS_CONFIG.getString(TAIRSERVER_SECTION, TAIR_MEM_MERGE_HOUR_RANGE,
+                             "7-7");
+    assert(hour_range != 0);
+    if(sscanf
+       (hour_range, "%d-%d", &mdb_param::mem_merge_time_low,
+        &mdb_param::mem_merge_time_high) != 2) {
+      mdb_param::chkslab_time_low = 7;
+      mdb_param::chkslab_time_high = 7;
+    }
+
+    mdb_param::mem_merge_move_count = 
+      TBSYS_CONFIG.getInt(TAIRSERVER_SECTION, TAIR_MEM_MERGE_MOVE_COUNT, 300);
 
     storage::storage_manager * manager = 0;
 

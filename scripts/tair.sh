@@ -3,11 +3,15 @@ TAIR_BIN_DIR=./sbin
 TAIR_ETC_DIR=./etc
 SERVER_COUNT=1
 
+# TCMalloc would print out a backtrace,
+# when the size of a memory allocation larger than this
+export TCMALLOC_LARGE_ALLOC_REPORT_THRESHOLD=$((1<<24))
+
 cd ${TAIR_DIR}
 
 ulimit -c unlimited
 
-export LD_LIBRARY_PATH=./lib:$LD_LIBRARY_PATH:/usr/local/lib:/opt/csr/common/lib
+export LD_LIBRARY_PATH=./lib:$LD_LIBRARY_PATH:/usr/local/lib:/usr/local/lib64:/opt/csr/common/lib
 
 if [ x$2 != x ]
 then
@@ -15,11 +19,13 @@ then
 fi
 
 VAL_LOG_PATH=./val_log
-VAL_CMD="valgrind --tool=memcheck --leak-check=full --show-reachable=yes --log-file=${VAL_LOG_PATH}/valgrind.log."`date +%m%d%s`
+VAL_CMD="valgrind --tool=memcheck --trace-children=yes --leak-check=full --show-reachable=yes --log-file=${VAL_LOG_PATH}/valgrind.log."`date +%m%d%s`
 
 DS_CMD=${TAIR_BIN_DIR}/tair_server
 CS_CMD=${TAIR_BIN_DIR}/tair_cfg_svr
 IV_CMD=${TAIR_BIN_DIR}/inval_server
+PX_CMD=${TAIR_BIN_DIR}/tair_proxy
+ADMIN_CMD=${TAIR_BIN_DIR}/tair_administrator
 
 VAL_DS_CMD="${VAL_CMD} ${TAIR_BIN_DIR}/tair_server"
 VAL_CS_CMD="${VAL_CMD} ${TAIR_BIN_DIR}/tair_cfg_svr"
@@ -101,6 +107,16 @@ start_iv()
   $1 -f ${TAIR_ETC_DIR}/invalserver.conf
 }
 
+start_px()
+{
+  $1 -f ${TAIR_ETC_DIR}/proxyserver.conf
+}
+
+start_admin()
+{
+  $1 -f ${TAIR_ETC_DIR}/tair_administrator.conf
+}
+
 stop_cs()
 {
   kill `cat logs/config.pid`
@@ -123,6 +139,16 @@ stop_ds()
 stop_iv()
 {
   kill `cat logs/inval.pid`
+}
+
+stop_admin()
+{
+  kill `cat logs/tair_administrator.pid`
+}
+
+stop_px()
+{
+  kill `cat logs/proxy.pid`
 }
 
 
@@ -184,6 +210,14 @@ tobdb()
   cd ${TAIR_ETC_DIR} &&  sed -i "s/^storage_engine.*$/storage_engine=bdb/" *.conf
 }
 
+rm_unused_shm()
+{
+  for file in `ls /dev/shm/`
+  do
+    sudo lsof /dev/shm/$file &>/dev/null || sudo rm -f /dev/shm/$file
+  done
+}
+
 case "$1" in
   start_cs)
   start_cs  "${CS_CMD}"
@@ -202,6 +236,18 @@ case "$1" in
   ;;
   stop_iv)
   stop_iv
+  ;;
+  start_admin)
+  start_admin "${ADMIN_CMD}"
+  ;;
+  stop_admin)
+  stop_admin
+  ;;
+  start_px)
+  start_px "$PX_CMD"
+  ;;
+  stop_px)
+  stop_px
   ;;
   valgrind_start_cs)
   check_folder
@@ -245,7 +291,10 @@ case "$1" in
   tomdb_shm)
   tomdb_shm
   ;;
+  rm_unused_shm)
+  rm_unused_shm
+  ;;
   *)
-  echo "usage: $0 {start_cs|stop_cs|start_ds|stop_ds|start_iv|stop_iv [SERVER_COUNT]|clean|log_debug2warn|log_warn2debug}"
+  echo "usage: $0 {start_cs|stop_cs|start_ds|stop_ds|start_iv|stop_iv|start_px|start_px [SERVER_COUNT]|clean|log_debug2warn|log_warn2debug}"
 esac
 

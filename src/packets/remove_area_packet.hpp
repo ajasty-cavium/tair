@@ -5,9 +5,9 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  *
- * this packet is for remove one particular area 
+ * this packet is for remove one particular area
  *
- * Version: $Id$
+ * Version: $Id: remove_area_packet.hpp 2640 2014-06-20 03:50:30Z mingmin.xmm@alibaba-inc.com $
  *
  * Authors:
  *   ruohai <ruohai@taobao.com>
@@ -27,27 +27,28 @@ namespace tair {
          area = 0;
       }
 
-
-      request_remove_area(request_remove_area &packet) : base_packet(packet)
+      request_remove_area(const request_remove_area &packet)
+        : base_packet(packet)
       {
          setPCode(TAIR_REQ_REMOVE_AREA_PACKET);
          area = packet.area;
       }
 
-
       ~request_remove_area()
       {
       }
 
+      virtual base_packet::Type get_type() {
+        return base_packet::REQ_SPECIAL;
+      }
 
-      bool encode(tbnet::DataBuffer *output)
+      bool encode(DataBuffer *output)
       {
          output->writeInt32(area);
          return true;
       }
 
-
-      bool decode(tbnet::DataBuffer *input, tbnet::PacketHeader *header)
+      bool decode(DataBuffer *input, PacketHeader *header)
       {
          if (header->_dataLen < (int)sizeof(int)) {
             log_warn( "buffer data too few.");
@@ -57,8 +58,18 @@ namespace tair {
          return true;
       }
 
+      virtual size_t size() const
+      {
+        return 4 + 16;// header 16 bytes
+      }
+
+      uint16_t ns() const
+      {
+         return (uint16_t)area;
+      }
+
    public:
-      int                 area;
+      int area;
    };
 }
 #endif

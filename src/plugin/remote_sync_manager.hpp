@@ -16,7 +16,6 @@
 
 
 #include <tbsys.h>
-#include <tbnet.h>
 
 #include "BlockQueueEx.hpp"
 #include "tair_client_api_impl.hpp"
