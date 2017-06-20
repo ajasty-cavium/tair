@@ -28,7 +28,7 @@ namespace tair
     # define CONFIG_SMP
     #endif
 
-    #if defined(__i386__) || defined(__x86_64__)
+    #if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
 
     // Atomic operations that C can't guarantee us.  Useful for
     // resource counting etc..
@@ -45,9 +45,12 @@ namespace tair
     /// 对有符号型整数做操作，只需要做适当的参数转换即可
     /// @param pv 指向操作数的指针
     /// @return 操作数加1以后的数值
-    #ifdef __x86_64__
+    #if defined(__x86_64__) || defined(__aarch64__)
     static __inline__ uint64_t atomic_inc(volatile uint64_t * pv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, 1);
+    #else
       register unsigned long __res;
       __asm__ __volatile__ (
           "movq $1,%0;"
@@ -60,6 +63,9 @@ namespace tair
 
     static __inline__ uint32_t atomic_inc(volatile uint32_t * pv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, 1);
+    #else
       register unsigned int __res;
       __asm__ __volatile__ (
           "movl $1,%0;"
@@ -67,10 +73,14 @@ namespace tair
           "incl %0"
           :"=a" (__res), "=q" (pv): "1" (pv));
       return __res;
+    #endif
     }
 
     static __inline__ uint16_t atomic_inc(volatile uint16_t * pv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, 1);
+    #else
       register unsigned short __res;
       __asm__ __volatile__ (
           "movw $1,%0;"
@@ -78,11 +88,14 @@ namespace tair
           "incw %0"
           :"=a" (__res), "=q" (pv): "1" (pv));
       return __res;
-
+    #endif
     }
 
     static __inline__ uint8_t  atomic_inc(volatile uint8_t * pv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, 1);
+    #else
       register unsigned char __res;
       __asm__ __volatile__ (
           "movb $1,%0;"
@@ -90,6 +103,7 @@ namespace tair
           "incb %0"
           :"=a" (__res), "=q" (pv): "1" (pv));
       return __res;
+    #endif
     }
 
     //return: the decremented value;
@@ -98,9 +112,12 @@ namespace tair
     /// 对有符号型整数做操作，只需要做适当的参数转换即可
     /// @param pv 指向操作数的指针
     /// @return 操作数减1后的数值
-    #ifdef __x86_64__
+    #if defined(__x86_64__) || defined(__aarch64__)
     static __inline__ uint64_t atomic_dec(volatile uint64_t * pv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, -1);
+    #else
       register unsigned long __res;
       __asm__ __volatile__ (
           "movq $0xffffffffffffffff,%0;"
@@ -108,11 +125,14 @@ namespace tair
           "decq %0"
           : "=a" (__res), "=q" (pv): "1" (pv));
       return __res;
-
+    #endif
     }
     #endif
     static __inline__ uint32_t atomic_dec(volatile uint32_t * pv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, -1);
+    #else
       register unsigned int __res;
       __asm__ __volatile__ (
           "movl $0xffffffff,%0;"
@@ -120,10 +140,13 @@ namespace tair
           "decl %0"
           : "=a" (__res), "=q" (pv): "1" (pv));
       return __res;
-
+    #endif
     }
     static __inline__ uint16_t atomic_dec(volatile uint16_t * pv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, -1);
+    #else
       register unsigned short __res;
       __asm__ __volatile__ (
           "movw $0xffff,%0;"
@@ -131,10 +154,14 @@ namespace tair
           "decw %0"
           : "=a" (__res), "=q" (pv): "1" (pv));
       return __res;
+    #endif
     }
 
     static __inline__ uint8_t  atomic_dec(volatile uint8_t * pv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, -1);
+    #else
       register unsigned char __res;
       __asm__ __volatile__ (
           "movb $0xff,%0;"
@@ -142,6 +169,7 @@ namespace tair
           "decb %0"
           : "=a" (__res), "=q" (pv): "1" (pv));
       return __res;
+    #endif
     }
 
     //return: the initial value of *pv
@@ -150,9 +178,12 @@ namespace tair
     /// 对有符号型整数做操作，只需要做适当的参数转换即可
     /// @param pv 指向操作数的指针
     /// @return 操作数加法之前的数值
-    #ifdef __x86_64__
+    #if defined(__x86_64__) || defined(__aarch64__)
     static __inline__ uint64_t atomic_add(volatile uint64_t * pv, const uint64_t av)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, av);
+    #else
       //:"=a" (__res), "=q" (pv): "m"(av), "1" (pv));
       register unsigned long __res;
       __asm__ __volatile__ (
@@ -160,10 +191,14 @@ namespace tair
           LOCK_PREFIX "xaddq %0,(%1);"
           :"=a" (__res), "=q" (pv): "mr"(av), "1" (pv));
       return __res;
+    #endif
     }
     #endif
     static __inline__ uint32_t atomic_add(volatile uint32_t * pv, const uint32_t av)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, av);
+    #else
       //:"=a" (__res), "=q" (pv): "m"(av), "1" (pv));
       register unsigned int __res;
       __asm__ __volatile__ (
@@ -171,10 +206,14 @@ namespace tair
           LOCK_PREFIX "xaddl %0,(%1);"
           :"=a" (__res), "=q" (pv): "mr"(av), "1" (pv));
       return __res;
+    #endif
     }
 
     static __inline__ uint16_t atomic_add(volatile uint16_t * pv, const uint16_t av)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, av);
+    #else
       //:"=a" (__res), "=q" (pv): "m"(av), "1" (pv));
       register unsigned short __res;
       __asm__ __volatile__ (
@@ -182,10 +221,14 @@ namespace tair
           LOCK_PREFIX "xaddw %0,(%1);"
           :"=a" (__res), "=q" (pv): "mr"(av), "1" (pv));
       return __res;
+    #endif
     }
 
     static __inline__ uint8_t  atomic_add(volatile uint8_t * pv, const uint8_t av)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_fetch_add_n(pv, av);
+    #else
       //:"=a" (__res), "=q" (pv): "m"(av), "1" (pv));
       register unsigned char __res;
       __asm__ __volatile__ (
@@ -193,6 +236,7 @@ namespace tair
           LOCK_PREFIX "xaddb %0,(%1);"
           :"=a" (__res), "=q" (pv): "mr"(av), "1" (pv));
       return __res;
+    #endif
     }
 
     //function: set *pv to nv
@@ -201,9 +245,12 @@ namespace tair
     /// @param pv 待赋值的整数（目的操作数）
     /// @param nv 向pv赋的整数
     /// @return pv指向的赋值前的数值
-    #ifdef __x86_64__
+    #if defined(__x86_64__) || defined(__aarch64__)
     static __inline__ uint64_t atomic_exchange(volatile uint64_t * pv, const uint64_t nv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_exchange_n(pv, nv);
+    #else
       register unsigned long __res;
       __asm__ __volatile__ (
           "1:"
@@ -211,10 +258,14 @@ namespace tair
           "jne 1b":
           "=a" (__res), "=q" (pv): "1" (pv), "q" (nv), "0" (*pv));
       return __res;
+    #endif
     }
     #endif
     static __inline__ uint32_t atomic_exchange(volatile uint32_t * pv, const uint32_t nv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_exchange_n(pv, nv);
+    #else
       register unsigned int __res;
       __asm__ __volatile__ (
           "1:"
@@ -222,10 +273,14 @@ namespace tair
           "jne 1b":
           "=a" (__res), "=q" (pv): "1" (pv), "q" (nv), "0" (*pv));
       return __res;
+    #endif
     }
 
     static __inline__ uint16_t atomic_exchange(volatile uint16_t * pv, const uint16_t nv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_exchange_n(pv, nv);
+    #else
       register unsigned short __res;
       __asm__ __volatile__ (
           "1:"
@@ -233,10 +288,14 @@ namespace tair
           "jne 1b":
           "=a" (__res), "=q" (pv): "1" (pv), "q" (nv), "0" (*pv));
       return __res;
+    #endif
     }
 
     static __inline__ uint8_t  atomic_exchange(volatile uint8_t * pv, const uint8_t nv)
     {
+    #ifdef _STDATOMIC_H
+      return __atomic_exchange_n(pv, nv);
+    #else
       register unsigned char __res;
       __asm__ __volatile__ (
           "1:"
@@ -244,6 +303,7 @@ namespace tair
           "jne 1b":
           "=a" (__res), "=q" (pv): "1" (pv), "q" (nv), "0" (*pv));
       return __res;
+    #endif
     }
 
     //function: compare *pv to cv, if equal, set *pv to nv, otherwise do nothing.
@@ -254,43 +314,63 @@ namespace tair
     /// @param nv 向pv赋的整数
     /// @param cv 和pv比较的整数
     /// @return pv指向的操作前的数值
-    #ifdef __x86_64__
+    #if defined(__x86_64__) || defined(__aarch64__)
     static __inline__ uint64_t atomic_compare_exchange(volatile uint64_t * pv,
         const uint64_t nv, const uint64_t cv)
     {
+    #ifdef _STDATOMIC_H
+      __atomic_compare_exchange_n(pv, &cv, nv, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+      return cv;
+    #else
       register unsigned long __res;
       __asm__ __volatile__ (
           LOCK_PREFIX "cmpxchgq %3,(%1)"
           : "=a" (__res), "=q" (pv) : "1" (pv), "q" (nv), "0" (cv));
       return __res;
+    #endif
     }
     #endif
     static __inline__ uint32_t atomic_compare_exchange(volatile uint32_t * pv,
         const uint32_t nv, const uint32_t cv)
     {
+    #ifdef _STDATOMIC_H
+      __atomic_compare_exchange_n(pv, &cv, nv, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+      return cv;
+    #else
       register unsigned int __res;
       __asm__ __volatile__ (
           LOCK_PREFIX "cmpxchgl %3,(%1)"
           : "=a" (__res), "=q" (pv) : "1" (pv), "q" (nv), "0" (cv));
       return __res;
+    #endif
     }
     static __inline__ uint16_t atomic_compare_exchange(volatile uint16_t * pv,
         const uint16_t nv, const uint16_t cv)
     {
+    #ifdef _STDATOMIC_H
+      __atomic_compare_exchange_n(pv, &cv, nv, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+      return cv;
+    #else
       register unsigned short __res;
       __asm__ __volatile__ (
           LOCK_PREFIX "cmpxchgw %3,(%1)"
           : "=a" (__res), "=q" (pv) : "1" (pv), "q" (nv), "0" (cv));
       return __res;
+    #endif
     }
     static __inline__ uint8_t atomic_compare_exchange(volatile uint8_t * pv,
         const uint8_t nv, const uint8_t cv)
     {
+    #ifdef _STDATOMIC_H
+      __atomic_compare_exchange_n(pv, &cv, nv, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+      return cv;
+    #else
       register unsigned char  __res;
       __asm__ __volatile__ (
           LOCK_PREFIX "cmpxchgb %3,(%1)"
           : "=a" (__res), "=q" (pv) : "1" (pv), "q" (nv), "0" (cv));
       return __res;
+    #endif
     }
 
     typedef void * pvoid;
@@ -300,7 +380,7 @@ namespace tair
     /// 把nv原子地赋值给*pv
     static __inline__ pvoid atomic_exchange_pointer(volatile pvoid * pv, const pvoid nv)
     {
-    #ifdef __x86_64__
+    #if defined(__x86_64__) || defined(__aarch64__)
       return (pvoid) atomic_exchange((uint64_t *) pv, (uint64_t) nv);
     #else
       return (pvoid) atomic_exchange((uint32_t *) pv, (uint32_t) nv);
@@ -313,7 +393,7 @@ namespace tair
     static __inline__ pvoid atomic_compare_exchange_pointer(volatile pvoid * pv,
         const pvoid nv, const pvoid cv)
     {
-    #ifdef __x86_64__
+    #if defined(__x86_64__) || defined(__aarch64__)
       return (pvoid) atomic_compare_exchange((uint64_t *) pv, (uint64_t) nv, (uint64_t)cv);
     #else
       return (pvoid) atomic_compare_exchange((uint32_t *) pv, (uint32_t) nv, (uint32_t)cv);
